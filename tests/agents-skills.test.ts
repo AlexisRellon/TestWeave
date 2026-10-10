@@ -124,3 +124,24 @@ test('compiled CLI supports setup alias identically to init', async (t) => {
   const skillContent = await readFile(skillFile, 'utf8');
   assert.match(skillContent, /name: testweave/);
 });
+
+test('compiled CLI supports update command to refresh rules and skills', async (t) => {
+  const root = await temporaryDirectory(t);
+  await exec(process.execPath, [cliPath, '--cwd', root, 'init', '--yes']);
+
+  const update = await exec(process.execPath, [cliPath, '--cwd', root, 'update', '--yes']);
+  assert.match(update.stdout, /updated/);
+  assert.match(update.stdout, /validated/);
+  assert.match(update.stdout, /79 agents/);
+
+  const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
+  const skillContent = await readFile(skillFile, 'utf8');
+  assert.match(skillContent, /name: testweave/);
+  assert.match(skillContent, /testweave update/);
+
+  const freshRoot = await temporaryDirectory(t);
+  const freshUpdate = await exec(process.execPath, [cliPath, '--cwd', freshRoot, 'update', '--yes']);
+  assert.match(freshUpdate.stdout, /updated/);
+  assert.match(freshUpdate.stdout, /created/);
+});
+
