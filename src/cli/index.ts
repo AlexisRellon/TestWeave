@@ -59,4 +59,13 @@ export async function main(argv = process.argv): Promise<void> {
   }
 }
 const invokedPath = process.argv[1];
-if (invokedPath && await realpath(invokedPath).catch(() => '') === fileURLToPath(import.meta.url)) await main();
+if (invokedPath) {
+  const [actualInvoked, thisFile] = await Promise.all([
+    realpath(invokedPath).catch(() => invokedPath),
+    realpath(fileURLToPath(import.meta.url)).catch(() => fileURLToPath(import.meta.url)),
+  ]);
+  const matches = process.platform === 'win32'
+    ? actualInvoked.toLowerCase() === thisFile.toLowerCase()
+    : actualInvoked === thisFile;
+  if (matches) await main();
+}
