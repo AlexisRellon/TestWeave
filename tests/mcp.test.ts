@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { createMcpServer } from '../src/mcp/server.js';
+import { repositoryFixture, moduleFixture } from './helpers.js';
+
+test('MCP exposes the contract and validates all three tools', async (t) => {
+  const { context, base, root } = await repositoryFixture(t);
+  const server = createMcpServer(context);
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const { tools } = await client.listTools();
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['analyze_code_drift', 'generate_qa_export', 'upsert_test_module']);
+  const { resources } = await client.listResources();
+  assert.equal(resources[0]?.uri, pathToFileURL(path.join(root, 'test-truth.md')).href);
+  const resource = await client.readResource({ uri: resources[0]!.uri });
+  assert.equal(resource.contents[0]?.mimeType, 'text/markdown');
+  const drift = await client.callTool({ name: 'analyze_code_drift', arguments: { base } });
+  assert.notEqual(drift.isError, true);
+  const update = await client.callTool({ name: 'upsert_test_module', arguments: { module: { ...moduleFixture, description: 'Changed through MCP' } } });
+  assert.notEqual(update.isError, true);
+  assert.equal((await context.store.read()).modules[0]?.description, 'Changed through MCP');
+  const output = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'xray', format: 'csv' } });
+  assert.notEqual(output.isError, true);
+  const invalid = await client.callTool({ name: 'upsert_test_module', arguments: { module: { id: 'missing-fields' } } });
+  assert.equal(invalid.isError, true);
+});
+test('compiled MCP process uses clean stdio and completes a protocol handshake', async (t) => {
+  const { root } = await repositoryFixture(t);
+  const cliPath = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [cliPath, '--cwd', root, 'mcp'], stderr: 'pipe' });
+  const client = new Client({ name: 'stdio-test', version: '1.0.0' });
+  t.after(async () => { await client.close(); });
+  await client.connect(transport);
+  const result = await client.listTools();
+  assert.equal(result.tools.length, 3);
+});

@@ -1,0 +1,58 @@
+{
+  "name": "testweave",
+  "version": "0.1.0",
+  "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/AlexisRellon/TestWeave.git" },
+  "homepage": "https://github.com/AlexisRellon/TestWeave#readme",
+  "bugs": { "url": "https://github.com/AlexisRellon/TestWeave/issues" },
+  "keywords": ["manual-testing", "qa", "cli", "mcp", "jira", "xray", "zephyr"],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "testweave": "dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "tsc -p tsconfig.json && node scripts/test.mjs",
+    "bundle:source": "node scripts/bundle-source.mjs",
+    "check:manager": "node scripts/check-package-manager.mjs",
+    "check": "tsc --noEmit -p tsconfig.test.json && tsc -p tsconfig.json && node scripts/test.mjs",
+    "prepack": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.78.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "commander": "13.1.0",
+    "jsonc-parser": "3.3.1",
+    "openai": "6.22.0",
+    "picocolors": "1.1.1",
+    "picomatch": "4.0.7",
+    "prompts": "2.4.2",
+    "remark-parse": "11.0.0",
+    "simple-git": "4.0.2",
+    "unified": "11.0.5",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/picomatch": "^4.0.2",
+    "@types/prompts": "^2.4.9",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3"
+  }
+}
