@@ -1,5 +1,5 @@
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises';
+import { existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,18 @@ const nodeEntries = {
   'yarn-classic': path.join(tools, 'yarn/bin/yarn.js'),
   'yarn-pnp': path.join(tools, '@yarnpkg/cli-dist/bin/yarn.js'),
 };
-const bunExecutable = path.join(tools, 'bun/bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
+const bunCandidates = [
+  path.join(tools, 'bun/bin', process.platform === 'win32' ? 'bun.exe' : 'bun'),
+  path.join(tools, 'bun/bin/bun.exe'),
+  path.join(tools, 'bun/bin/bun'),
+  path.join(tools, '.bin', process.platform === 'win32' ? 'bun.cmd' : 'bun'),
+  path.join(tools, '@oven/bun-linux-x64/bin/bun'),
+  path.join(tools, '@oven/bun-windows-x64/bin/bun.exe'),
+];
+const bunExecutable = bunCandidates.find((candidate) => existsSync(candidate)) ?? bunCandidates[0];
+if (manager === 'bun' && process.platform !== 'win32' && existsSync(bunExecutable)) {
+  try { chmodSync(bunExecutable, 0o755); } catch { /* ignore */ }
+}
 if (!['npm', 'pnpm', 'yarn-classic', 'yarn-pnp', 'bun'].includes(manager)) {
   throw new Error('Choose npm, pnpm, yarn-classic, yarn-pnp, or bun');
 }
@@ -120,7 +131,11 @@ try {
   await run('git', ['push', 'origin', 'main']);
   console.log(manager + ': install, CLI, doctor, standalone MCP, and Git push enforcement passed');
 } finally {
-  if (path.dirname(directory) !== path.resolve(tmpdir()) || !path.basename(directory).startsWith('testweave-manager-')) {
+  const dirParent = path.dirname(directory);
+  const resolvedTmp = path.resolve(tmpdir());
+  const parentMatches = dirParent === resolvedTmp ||
+    (await realpath(dirParent).catch(() => '')) === (await realpath(resolvedTmp).catch(() => ''));
+  if (!parentMatches || !path.basename(directory).startsWith('testweave-manager-')) {
     throw new Error('Unsafe verification cleanup path');
   }
   await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

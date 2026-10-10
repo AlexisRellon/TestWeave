@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { TestContext } from 'node:test';
@@ -18,9 +18,10 @@ export const moduleFixture: TestModule = {
 };
 export function contractFixture(): TestTruth { return { ...createTestTruth('Fixture'), modules: [structuredClone(moduleFixture)] }; }
 export async function temporaryDirectory(t: TestContext): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), 'testweave-'));
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'testweave-')));
+  const canonicalTmp = await realpath(tmpdir());
   t.after(async () => {
-    if (path.dirname(directory) !== path.resolve(tmpdir()) || !path.basename(directory).startsWith('testweave-')) throw new Error('Unsafe test cleanup path');
+    if (path.dirname(directory) !== canonicalTmp || !path.basename(directory).startsWith('testweave-')) throw new Error('Unsafe test cleanup path');
     await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   return directory;
