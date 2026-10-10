@@ -9,10 +9,23 @@ Generated from the working files with `npm run bundle:source`.
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/AlexisRellon/TestWeave.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexisRellon/TestWeave.git"
+  },
   "homepage": "https://github.com/AlexisRellon/TestWeave#readme",
-  "bugs": { "url": "https://github.com/AlexisRellon/TestWeave/issues" },
-  "keywords": ["manual-testing", "qa", "cli", "mcp", "jira", "xray", "zephyr"],
+  "bugs": {
+    "url": "https://github.com/AlexisRellon/TestWeave/issues"
+  },
+  "keywords": [
+    "manual-testing",
+    "qa",
+    "cli",
+    "mcp",
+    "jira",
+    "xray",
+    "zephyr"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -57,6 +70,7 @@ Generated from the working files with `npm run bundle:source`.
     "@types/node": "^20.19.0",
     "@types/picomatch": "^4.0.2",
     "@types/prompts": "^2.4.9",
+    "semver": "7.8.5",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3"
   }
@@ -252,7 +266,16 @@ export async function main(argv = process.argv): Promise<void> {
   }
 }
 const invokedPath = process.argv[1];
-if (invokedPath && await realpath(invokedPath).catch(() => '') === fileURLToPath(import.meta.url)) await main();
+if (invokedPath) {
+  const [actualInvoked, thisFile] = await Promise.all([
+    realpath(invokedPath).catch(() => invokedPath),
+    realpath(fileURLToPath(import.meta.url)).catch(() => fileURLToPath(import.meta.url)),
+  ]);
+  const matches = process.platform === 'win32'
+    ? actualInvoked.toLowerCase() === thisFile.toLowerCase()
+    : actualInvoked === thisFile;
+  if (matches) await main();
+}
 ````
 
 ````src/cli/init.ts
@@ -1434,7 +1457,7 @@ test('AI author validates responses and preserves module identity', async () => 
 ````
 
 ````tests/helpers.ts
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { TestContext } from 'node:test';
@@ -1454,9 +1477,10 @@ export const moduleFixture: TestModule = {
 };
 export function contractFixture(): TestTruth { return { ...createTestTruth('Fixture'), modules: [structuredClone(moduleFixture)] }; }
 export async function temporaryDirectory(t: TestContext): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), 'testweave-'));
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'testweave-')));
+  const canonicalTmp = await realpath(tmpdir());
   t.after(async () => {
-    if (path.dirname(directory) !== path.resolve(tmpdir()) || !path.basename(directory).startsWith('testweave-')) throw new Error('Unsafe test cleanup path');
+    if (path.dirname(directory) !== canonicalTmp || !path.basename(directory).startsWith('testweave-')) throw new Error('Unsafe test cleanup path');
     await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   return directory;
@@ -1682,7 +1706,7 @@ async function walk(directory) {
   return files.sort();
 }
 const files = ['package.json', 'tsconfig.json', 'tsconfig.test.json', '.gitignore',
-  ...await walk('src'), ...await walk('tests'), ...await walk('scripts'), '.github/workflows/ci.yml'];
+  ...await walk('src'), ...await walk('tests'), ...await walk('scripts'), ...await walk('.github/workflows')];
 const fence = String.fromCharCode(96).repeat(4);
 const blocks = await Promise.all(files.map(async (file) =>
   fence + file + '\n' + (await readFile(path.join(root, file), 'utf8')).trimEnd() + '\n' + fence));
@@ -1692,8 +1716,8 @@ console.log('Wrote IMPLEMENTATION.md with ' + files.length + ' file-named code b
 ````
 
 ````scripts/check-package-manager.mjs
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises';
+import { existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1714,7 +1738,18 @@ const nodeEntries = {
   'yarn-classic': path.join(tools, 'yarn/bin/yarn.js'),
   'yarn-pnp': path.join(tools, '@yarnpkg/cli-dist/bin/yarn.js'),
 };
-const bunExecutable = path.join(tools, 'bun/bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
+const bunCandidates = [
+  path.join(tools, 'bun/bin', process.platform === 'win32' ? 'bun.exe' : 'bun'),
+  path.join(tools, 'bun/bin/bun.exe'),
+  path.join(tools, 'bun/bin/bun'),
+  path.join(tools, '.bin', process.platform === 'win32' ? 'bun.cmd' : 'bun'),
+  path.join(tools, '@oven/bun-linux-x64/bin/bun'),
+  path.join(tools, '@oven/bun-windows-x64/bin/bun.exe'),
+];
+const bunExecutable = bunCandidates.find((candidate) => existsSync(candidate)) ?? bunCandidates[0];
+if (manager === 'bun' && process.platform !== 'win32' && existsSync(bunExecutable)) {
+  try { chmodSync(bunExecutable, 0o755); } catch { /* ignore */ }
+}
 if (!['npm', 'pnpm', 'yarn-classic', 'yarn-pnp', 'bun'].includes(manager)) {
   throw new Error('Choose npm, pnpm, yarn-classic, yarn-pnp, or bun');
 }
@@ -1814,11 +1849,174 @@ try {
   await run('git', ['push', 'origin', 'main']);
   console.log(manager + ': install, CLI, doctor, standalone MCP, and Git push enforcement passed');
 } finally {
-  if (path.dirname(directory) !== path.resolve(tmpdir()) || !path.basename(directory).startsWith('testweave-manager-')) {
+  const dirParent = path.dirname(directory);
+  const resolvedTmp = path.resolve(tmpdir());
+  const parentMatches = dirParent === resolvedTmp ||
+    (await realpath(dirParent).catch(() => '')) === (await realpath(resolvedTmp).catch(() => ''));
+  if (!parentMatches || !path.basename(directory).startsWith('testweave-manager-')) {
     throw new Error('Unsafe verification cleanup path');
   }
   await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
+````
+
+````scripts/check-pr-title.mjs
+import { validatePrTitle } from './release-policy.mjs';
+
+try {
+  validatePrTitle(process.env.PR_TITLE ?? '');
+  console.log('PR title follows Conventional Commits.');
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+````
+
+````scripts/release-policy.mjs
+import { gt, valid } from 'semver';
+
+export function validateVersion(packageJson, lock) {
+  const version = packageJson.version;
+  if (typeof version !== 'string' || valid(version) !== version || version.includes('+')) {
+    throw new Error('Use canonical SemVer MAJOR.MINOR.PATCH[-prerelease], without build metadata.');
+  }
+  if (lock.version !== version || lock.packages?.['']?.version !== version) {
+    throw new Error('package.json and both package-lock.json versions must match.');
+  }
+  return version;
+}
+
+export function validateRelease(tag, packageJson, lock, changelog, previousTags = []) {
+  const version = validateVersion(packageJson, lock);
+  if (tag !== 'v' + version) {
+    throw new Error('Release tag must exactly match v' + version + '.');
+  }
+  for (const previousTag of previousTags) {
+    const previous = previousTag.startsWith('v') ? previousTag.slice(1) : '';
+    if (previousTag !== tag && valid(previous) === previous && !gt(version, previous)) {
+      throw new Error('Release version must be greater than existing tag ' + previousTag + '.');
+    }
+  }
+  const sections = changelog.replace(/\r\n/g, '\n').split(/^## /m).slice(1);
+  const matching = sections.filter((section) => section.startsWith('[' + version + ']'));
+  if (matching.length !== 1) throw new Error('Changelog must contain exactly one section for ' + version + '.');
+  const [heading, ...body] = matching[0].split('\n');
+  const date = heading.slice(('[' + version + '] - ').length);
+  if (heading !== '[' + version + '] - ' + date || !/^\d{4}-\d{2}-\d{2}$/.test(date)
+    || Number.isNaN(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) {
+    throw new Error('Changelog release heading must be ## [' + version + '] - YYYY-MM-DD with a valid date.');
+  }
+  const notes = body.join('\n').trim();
+  if (!/^### (Added|Changed|Deprecated|Removed|Fixed|Security|Breaking changes)$/m.test(notes)
+    || !/^- \S/m.test(notes)) {
+    throw new Error('Release notes need a standard change category and at least one change bullet.');
+  }
+  return { version, notes };
+}
+
+export function validatePrTitle(title) {
+  if (!/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9._/-]+\))?!?: \S[^\r\n]*$/.test(title)) {
+    throw new Error('PR title must follow Conventional Commits, for example: feat(cli): add export filtering');
+  }
+}
+````
+
+````scripts/release.mjs
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { validateRelease, validateVersion } from './release-policy.mjs';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const readJson = async (name) => JSON.parse(await readFile(path.join(root, name), 'utf8'));
+try {
+  const [packageJson, lock] = await Promise.all([readJson('package.json'), readJson('package-lock.json')]);
+  const tag = process.argv[2];
+  if (!tag) {
+    console.log('Release metadata valid: ' + validateVersion(packageJson, lock));
+  } else {
+    const changelog = await readFile(path.join(root, 'CHANGELOG.md'), 'utf8');
+    const tags = execFileSync('git', ['tag', '--list', 'v*'], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+    const { version, notes } = validateRelease(tag, packageJson, lock, changelog, tags);
+    if (process.env.RUNNER_TEMP) {
+      const body = notes + '\n\n### Installation\n\nDownload `testweave-' + version
+        + '.tgz` and verify it using `SHA256SUMS`. See the [package-manager instructions]'
+        + '(https://github.com/AlexisRellon/TestWeave/blob/' + tag + '/README.md#package-managers).\n';
+      await writeFile(path.join(process.env.RUNNER_TEMP, 'testweave-release-notes.md'), body);
+    }
+    console.log('Release valid: ' + tag);
+  }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+````
+
+````scripts/release.test.mjs
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { validatePrTitle, validateRelease, validateVersion } from './release-policy.mjs';
+
+function fixture(version = '1.2.3') {
+  return {
+    packageJson: { version },
+    lock: { version, packages: { '': { version } } },
+    changelog: '# Changelog\n\n## [Unreleased]\n\n## [' + version
+      + '] - 2026-10-10\n\n### Fixed\n\n- Preserve hook input.\n\n## [1.2.2] - 2026-10-01\n\n### Added\n\n- Earlier change.\n'
+  };
+}
+
+test('release extracts only the tagged version notes and accepts increasing prereleases', () => {
+  for (const version of ['1.2.3', '1.3.0-rc.1']) {
+    const { packageJson, lock, changelog } = fixture(version);
+    assert.deepEqual(validateRelease('v' + version, packageJson, lock, changelog, ['v1.2.2', 'v' + version]), {
+      version, notes: '### Fixed\n\n- Preserve hook input.'
+    });
+  }
+});
+
+test('release rejects malformed semver, leading zeros, build metadata and lock drift', () => {
+  for (const version of ['01.2.3', 'v1.2.3', '1.2', '1.2.3-01', '1.2.3+build.1']) {
+    const { packageJson, lock } = fixture(version);
+    assert.throws(() => validateVersion(packageJson, lock), /SemVer/);
+  }
+  const { packageJson, lock } = fixture();
+  lock.packages[''].version = '1.2.2';
+  assert.throws(() => validateVersion(packageJson, lock), /must match/);
+  lock.packages[''].version = packageJson.version;
+  lock.version = '1.2.2';
+  assert.throws(() => validateVersion(packageJson, lock), /must match/);
+});
+
+test('release rejects tag mismatch and versions behind an existing tag', () => {
+  const { packageJson, lock, changelog } = fixture();
+  assert.throws(() => validateRelease('v1.2.4', packageJson, lock, changelog), /exactly match/);
+  assert.throws(() => validateRelease('v1.2.3', packageJson, lock, changelog, ['v2.0.0']), /greater/);
+  assert.throws(() => validateRelease('v1.2.3', packageJson, lock, changelog, ['v1.3.0-beta.1']), /greater/);
+});
+
+test('release rejects missing, duplicate, empty, undated and impossible-date changelog entries', () => {
+  const { packageJson, lock, changelog } = fixture();
+  for (const invalid of [
+    '# Changelog\n\n## [Unreleased]\n',
+    changelog + '\n## [1.2.3] - 2026-10-10\n',
+    '## [1.2.3] - 2026-10-10\n',
+    changelog.replace(' - 2026-10-10', ''),
+    changelog.replace('2026-10-10', '2026-02-30')
+  ]) {
+    assert.throws(() => validateRelease('v1.2.3', packageJson, lock, invalid), /Changelog|changelog|Release notes/);
+  }
+});
+
+test('conventional PR titles accept breaking changes and Dependabot prefixes', () => {
+  for (const title of ['feat(cli)!: change output', 'fix: preserve stdin', 'ci(deps): bump actions', 'chore(deps): bump SDK']) {
+    assert.doesNotThrow(() => validatePrTitle(title));
+  }
+  for (const title of ['', 'Update things', 'feat: ', 'fix: one\nmalicious second line', 'feature: example']) {
+    assert.throws(() => validatePrTitle(title), /Conventional Commits/);
+  }
+});
 ````
 
 ````scripts/test.mjs
@@ -1830,6 +2028,10 @@ const files = (await readdir(new URL('../tests/', import.meta.url)))
   .filter((file) => file.endsWith('.test.ts'))
   .sort()
   .map((file) => fileURLToPath(new URL('../tests/' + file, import.meta.url)));
+files.push(...(await readdir(new URL('../scripts/', import.meta.url)))
+  .filter((file) => file.endsWith('.test.mjs'))
+  .sort()
+  .map((file) => fileURLToPath(new URL('../scripts/' + file, import.meta.url))));
 const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', ...files], { stdio: 'inherit' });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;
@@ -1839,19 +2041,50 @@ process.exitCode = result.status ?? 1;
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_call:
+concurrency:
+  group: ${{ github.workflow }}-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
+  metadata:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/release.mjs
+      - name: Validate Conventional Commit PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/check-pr-title.mjs
   check:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [20, 22, 24]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -1860,14 +2093,19 @@ jobs:
       - run: npm audit --omit=dev
       - run: npm pack --dry-run
   package-managers:
+    name: Install (${{ matrix.os }}, ${{ matrix.manager }})
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         manager: [npm, pnpm, yarn-classic, yarn-pnp, bun]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -1875,4 +2113,95 @@ jobs:
       - run: npm pack
       - run: npm install --prefix .manager-tools --no-save pnpm@10 yarn@1 @yarnpkg/cli-dist@4 bun@1 --no-audit --no-fund
       - run: npm run check:manager -- ${{ matrix.manager }}
+  required:
+    name: CI required
+    if: always()
+    needs: [metadata, check, package-managers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every check to succeed
+        env:
+          METADATA: ${{ needs.metadata.result }}
+          TESTS: ${{ needs.check.result }}
+          MANAGERS: ${{ needs.package-managers.result }}
+        run: |
+          test "$METADATA" = success
+          test "$TESTS" = success
+          test "$MANAGERS" = success
+````
+
+````.github/workflows/release.yml
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Require a merged main commit and matching release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          node scripts/release.mjs "$RELEASE_TAG"
+  checks:
+    name: Release checks
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+  publish:
+    name: Publish GitHub release
+    needs: [validate, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build release assets and notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/release.mjs "$RELEASE_TAG"
+          npm pack --pack-destination "$RUNNER_TEMP"
+          sha256sum "$RUNNER_TEMP/testweave-"*.tgz | sed "s|$RUNNER_TEMP/||" > "$RUNNER_TEMP/SHA256SUMS"
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=(--latest)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/testweave-"*.tgz "$RUNNER_TEMP/SHA256SUMS" \
+            --verify-tag --title "TestWeave $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
 ````

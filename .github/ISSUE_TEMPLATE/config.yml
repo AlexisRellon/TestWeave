@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Usage questions
+    url: https://github.com/AlexisRellon/TestWeave/discussions
+    about: Ask for help and share workflows.
+  - name: Report a security vulnerability privately
+    url: https://github.com/AlexisRellon/TestWeave/security/advisories/new
+    about: Do not disclose vulnerabilities in a public issue.
