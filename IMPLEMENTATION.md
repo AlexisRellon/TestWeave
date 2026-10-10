@@ -2962,10 +2962,12 @@ jobs:
           if [[ "$RELEASE_TAG" == *-* ]]; then
             args=(--prerelease --latest=false)
           fi
-          gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/testweave-"*.tgz "$RUNNER_TEMP/SHA256SUMS" \
-            --verify-tag --title "TestWeave $RELEASE_TAG" \
-            --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              "$RUNNER_TEMP/testweave-"*.tgz "$RUNNER_TEMP/SHA256SUMS" \
+              --verify-tag --title "TestWeave $RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
+          fi
       - name: Publish to GitHub Packages
         env:
           NODE_AUTH_TOKEN: ${{ github.token }}
@@ -2978,12 +2980,13 @@ jobs:
             const pkgPath = "'"$RUNNER_TEMP"'/gpr/package/package.json";
             const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
             pkg.name = "@alexisrellon/testweave";
+            delete pkg.scripts;
             pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
             fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
           '
           cd "$RUNNER_TEMP/gpr/package"
           echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
-          publish_args=(--access public --registry=https://npm.pkg.github.com)
+          publish_args=(--access public --ignore-scripts --registry=https://npm.pkg.github.com)
           if [[ "$RELEASE_TAG" == *-* ]]; then
             publish_args+=(--tag next)
           fi
