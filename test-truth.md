@@ -60,9 +60,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Run testweave update with --yes or interactive selection",
+              "action": "Run testweave update with --yes or interactive selection across version releases",
               "data": "npx testweave update --yes",
-              "expected": "Refreshes custom skills and IDE rules, updates hooks, and reports updated contract status"
+              "expected": "Refreshes custom skills and IDE rules, updates hooks, and reports updated contract status for current version"
             }
           ],
           "tags": [
@@ -142,9 +142,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Execute MCP tools and contract validations",
-              "data": "get_contract, upsert_test_module, check_drift",
-              "expected": "Contracts are serialized, parsed, and drift is accurately calculated"
+              "action": "Execute MCP tools, contract validations, and server lifecycle matching release version",
+              "data": "get_contract, upsert_test_module, check_drift, McpServer v0.3.0",
+              "expected": "Contracts are serialized, parsed, server version matches package, and drift is accurately calculated"
             }
           ],
           "tags": [
@@ -154,6 +154,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
         }
       ]
     }
+
   ]
 }
 ~~~

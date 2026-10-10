@@ -12,7 +12,7 @@ import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.2.0')
+  const program = new Command().name('testweave').version('0.3.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();

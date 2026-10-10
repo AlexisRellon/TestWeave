@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -125,6 +125,7 @@ coverage/
 *.tgz
 .testweave-exports/
 .manager-tools/
+release-assets/
 .vscode/
 ````
 
@@ -507,13 +508,14 @@ import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
 import { createContext } from './context.js';
 import { runInit, type InitOptions } from './init.js';
+import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.2.0')
+  const program = new Command().name('testweave').version('0.3.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -525,6 +527,10 @@ export function createProgram(): Command {
     .option('-y, --yes', 'Accept default integrations without prompting')
     .option('--no-hook', 'Skip installing a Git hook')
     .action(async (options: InitOptions) => { await runInit(await context(), options); });
+  program.command('update').description('Update agent skills, IDE rules, and hooks to the latest TestWeave definitions')
+    .option('-y, --yes', 'Accept default or existing integrations without prompting')
+    .option('--no-hook', 'Skip installing or updating a Git hook')
+    .action(async (options: UpdateOptions) => { await runUpdate(await context(), options); });
   program.command('doctor').description('Validate the contract, IDE rules, and hook')
     .option('--fix', 'Repair supported configuration problems without prompting')
     .option('--json', 'Emit machine-readable diagnostics')
@@ -585,7 +591,7 @@ import { installHook } from '../integrations/hooks.js';
 import { printBanner, printSetupOverview } from './banner.js';
 import { formatSelectedSummary } from './agent-selector.js';
 
-export interface InitOptions { yes?: boolean; hook?: boolean }
+export interface InitOptions { yes?: boolean; hook?: boolean; isUpdate?: boolean }
 
 export async function runInit(context: CliContext, options: InitOptions, prompt: UserPrompter = new TerminalPrompter()): Promise<void> {
   printBanner(context.output.log);
@@ -612,8 +618,11 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
     hook: options.hook !== false && detected.git && (previous?.hook ?? true),
   };
 
-  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
-    context.output.log('Setup cancelled');
+  const actionVerb = options.isUpdate ? 'Update' : 'Initialize';
+  const pastVerb = options.isUpdate ? 'updated' : 'initialized';
+
+  if (!options.yes && !await prompt.confirm(`${actionVerb} QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
+    context.output.log(`${options.isUpdate ? 'Update' : 'Setup'} cancelled`);
     return;
   }
 
@@ -622,7 +631,7 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   if (config.hook) await installHook(context.root, context.git);
   await saveConfig(context.root, config);
 
-  context.output.log(pc.green(`✔ TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
+  context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
 }
 ````
@@ -698,6 +707,25 @@ export async function runSync(context: CliContext, options: SyncOptions, input?:
     }
   }
   return reports.some((report) => report.blocked) ? 1 : 0;
+}
+````
+
+````src/cli/update.ts
+import type { CliContext } from './context.js';
+import { TerminalPrompter, type UserPrompter } from './prompts.js';
+import { runInit } from './init.js';
+
+export interface UpdateOptions {
+  yes?: boolean;
+  hook?: boolean;
+}
+
+export async function runUpdate(
+  context: CliContext,
+  options: UpdateOptions,
+  prompt: UserPrompter = new TerminalPrompter()
+): Promise<void> {
+  await runInit(context, { ...options, isUpdate: true }, prompt);
 }
 ````
 
@@ -1544,6 +1572,8 @@ TestWeave keeps manual QA test contracts (\`test-truth.md\`) synchronized with s
   - \`--provider <openai|anthropic>\`: AI module drafting.
 - \`testweave init\` / \`testweave setup\`: Initialize contract, agent skills, and Git pre-push hook.
   - \`-y, --yes\`: Accept defaults non-interactively.
+- \`testweave update\`: Update agent skills, IDE rules, and hooks to the latest definitions.
+  - \`-y, --yes\`: Accept existing or detected integrations non-interactively.
 
 ## Development Workflow
 
@@ -1730,7 +1760,7 @@ async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.2.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.3.0' });
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',
@@ -1957,6 +1987,26 @@ test('compiled CLI supports setup alias identically to init', async (t) => {
   const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
   const skillContent = await readFile(skillFile, 'utf8');
   assert.match(skillContent, /name: testweave/);
+});
+
+test('compiled CLI supports update command to refresh rules and skills', async (t) => {
+  const root = await temporaryDirectory(t);
+  await exec(process.execPath, [cliPath, '--cwd', root, 'init', '--yes']);
+
+  const update = await exec(process.execPath, [cliPath, '--cwd', root, 'update', '--yes']);
+  assert.match(update.stdout, /updated/);
+  assert.match(update.stdout, /validated/);
+  assert.match(update.stdout, /79 agents/);
+
+  const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
+  const skillContent = await readFile(skillFile, 'utf8');
+  assert.match(skillContent, /name: testweave/);
+  assert.match(skillContent, /testweave update/);
+
+  const freshRoot = await temporaryDirectory(t);
+  const freshUpdate = await exec(process.execPath, [cliPath, '--cwd', freshRoot, 'update', '--yes']);
+  assert.match(freshUpdate.stdout, /updated/);
+  assert.match(freshUpdate.stdout, /created/);
 });
 ````
 
