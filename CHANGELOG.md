@@ -4,6 +4,17 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-10
+
+### Added
+
+- `testweave update` command to synchronize agent skills, IDE rules, and Git hooks to the latest definitions.
+- Non-interactive `--yes` option for `update` to preserve current and detected integrations.
+
+### Changed
+
+- Enhanced Quickstart, package manager guide, and CLI reference with `update` command documentation.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added
