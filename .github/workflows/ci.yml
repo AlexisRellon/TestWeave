@@ -1,19 +1,50 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_call:
+concurrency:
+  group: ${{ github.workflow }}-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
+  metadata:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/release.mjs
+      - name: Validate Conventional Commit PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/check-pr-title.mjs
   check:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [20, 22, 24]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -22,14 +53,19 @@ jobs:
       - run: npm audit --omit=dev
       - run: npm pack --dry-run
   package-managers:
+    name: Install (${{ matrix.os }}, ${{ matrix.manager }})
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         manager: [npm, pnpm, yarn-classic, yarn-pnp, bun]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -37,4 +73,20 @@ jobs:
       - run: npm pack
       - run: npm install --prefix .manager-tools --no-save pnpm@10 yarn@1 @yarnpkg/cli-dist@4 bun@1 --no-audit --no-fund
       - run: npm run check:manager -- ${{ matrix.manager }}
+  required:
+    name: CI required
+    if: always()
+    needs: [metadata, check, package-managers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every check to succeed
+        env:
+          METADATA: ${{ needs.metadata.result }}
+          TESTS: ${{ needs.check.result }}
+          MANAGERS: ${{ needs.package-managers.result }}
+        run: |
+          test "$METADATA" = success
+          test "$TESTS" = success
+          test "$MANAGERS" = success
 

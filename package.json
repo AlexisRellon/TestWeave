@@ -4,10 +4,23 @@
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/AlexisRellon/TestWeave.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexisRellon/TestWeave.git"
+  },
   "homepage": "https://github.com/AlexisRellon/TestWeave#readme",
-  "bugs": { "url": "https://github.com/AlexisRellon/TestWeave/issues" },
-  "keywords": ["manual-testing", "qa", "cli", "mcp", "jira", "xray", "zephyr"],
+  "bugs": {
+    "url": "https://github.com/AlexisRellon/TestWeave/issues"
+  },
+  "keywords": [
+    "manual-testing",
+    "qa",
+    "cli",
+    "mcp",
+    "jira",
+    "xray",
+    "zephyr"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -52,6 +65,7 @@
     "@types/node": "^20.19.0",
     "@types/picomatch": "^4.0.2",
     "@types/prompts": "^2.4.9",
+    "semver": "7.8.5",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3"
   }

@@ -1,0 +1,42 @@
+name: Bug report
+description: Report reproducible unexpected behavior.
+title: '[Bug]: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Check existing issues first. Report security vulnerabilities privately using the Security tab.
+  - type: input
+    id: version
+    attributes:
+      label: TestWeave version or commit
+      description: Run testweave --version, or provide your checkout commit.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node version, Git version, and package manager/version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal example or repository and exact commands. Remove secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Include error output with private information removed.
+    validations:
+      required: true

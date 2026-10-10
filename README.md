@@ -4,6 +4,10 @@
 
 TestWeave keeps manual QA definitions alongside source code in `test-truth.md`. It provides a Node.js 20+ CLI, a local MCP server, Git pre-push enforcement, and Jira/Xray/Zephyr exports. Git must be installed for drift checks and hooks.
 
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow the [Code of Conduct](CODE_OF_CONDUCT.md), and use the [issue templates](https://github.com/AlexisRellon/TestWeave/issues/new/choose) or [Discussions](https://github.com/AlexisRellon/TestWeave/discussions). See [SECURITY.md](SECURITY.md) for private vulnerability reports, [CHANGELOG.md](CHANGELOG.md) for changes, and [RELEASING.md](RELEASING.md) for the semantic-versioned release process.
+
 ## Run from this checkout
 
 ```sh
