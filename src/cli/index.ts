@@ -11,7 +11,7 @@ import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.1.0')
+  const program = new Command().name('testweave').version('0.2.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -19,7 +19,7 @@ export function createProgram(): Command {
     const options = program.opts<{ cwd: string }>();
     return createContext(options.cwd);
   };
-  program.command('init').description('Detect integrations and initialize the QA contract')
+  program.command('init').alias('setup').description('Detect integrations and initialize the QA contract')
     .option('-y, --yes', 'Accept default integrations without prompting')
     .option('--no-hook', 'Skip installing a Git hook')
     .action(async (options: InitOptions) => { await runInit(await context(), options); });

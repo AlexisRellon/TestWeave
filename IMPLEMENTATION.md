@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -40,6 +40,7 @@ Generated from the working files with `npm run bundle:source`.
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
@@ -124,6 +125,298 @@ coverage/
 *.tgz
 .testweave-exports/
 .manager-tools/
+.vscode/
+````
+
+````src/cli/agent-selector.ts
+import pc from 'picocolors';
+import { ADDITIONAL_AGENTS, type AgentDefinition } from '../integrations/agents.js';
+
+export function formatSelectedSummary(selectedIds: Set<string>): string {
+  const selectedNames: string[] = [];
+
+  if (selectedIds.has('universal')) {
+    selectedNames.push('Amp', 'Cline', 'Codex');
+  }
+
+  for (const agent of ADDITIONAL_AGENTS) {
+    if (selectedIds.has(agent.id) || (agent.id === 'claude-code' && selectedIds.has('claude'))) {
+      selectedNames.push(agent.displayName);
+    }
+  }
+
+  if (selectedNames.length === 0) {
+    return 'None';
+  }
+
+  if (selectedIds.has('universal')) {
+    const additionalCount = selectedNames.length - 3;
+    const remainder = 11 + additionalCount;
+    return `Amp, Cline, Codex +${remainder} more`;
+  }
+
+  if (selectedNames.length <= 3) {
+    return selectedNames.join(', ');
+  }
+
+  const preview = selectedNames.slice(0, 3).join(', ');
+  const remainder = selectedNames.length - 3;
+  return `${preview} +${remainder} more`;
+}
+
+export async function promptAgentSelection(
+  initialSelected: string[],
+  isInteractive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
+): Promise<string[]> {
+  const selectedSet = new Set<string>(['universal']);
+
+  for (const id of initialSelected) {
+    if (id === 'claude') {
+      selectedSet.add('claude-code');
+      selectedSet.add('claude');
+    } else {
+      selectedSet.add(id);
+    }
+  }
+
+  if (!isInteractive) {
+    const summary = formatSelectedSummary(selectedSet);
+    process.stdout.write(`  ${pc.green(pc.bold('Selected:'))} ${pc.green(summary)}\n\n`);
+    return Array.from(selectedSet);
+  }
+
+  let searchQuery = '';
+  let cursorIndex = 0;
+  const pageSize = 8;
+  let lastRenderedLines = 0;
+
+  const getFiltered = (): AgentDefinition[] => {
+    if (!searchQuery.trim()) return ADDITIONAL_AGENTS;
+    const q = searchQuery.toLowerCase().trim();
+    return ADDITIONAL_AGENTS.filter(
+      (a) =>
+        a.displayName.toLowerCase().includes(q) ||
+        a.id.toLowerCase().includes(q) ||
+        a.skillsDir.toLowerCase().includes(q)
+    );
+  };
+
+  const render = (): void => {
+    const filtered = getFiltered();
+    if (cursorIndex >= filtered.length) {
+      cursorIndex = Math.max(0, filtered.length - 1);
+    }
+
+    const lines: string[] = [];
+    lines.push(pc.dim('── ') + pc.white('Additional agents') + pc.dim(' ──────────────────────────────────────────'));
+    lines.push(` Search: ${pc.cyan(searchQuery)}${searchQuery ? '' : pc.dim(' ')}`);
+    lines.push(` ${pc.dim('↑↓ move, space select, enter confirm')}`);
+    lines.push('');
+
+    let scrollOffset = 0;
+    if (filtered.length > pageSize) {
+      scrollOffset = Math.max(0, Math.min(cursorIndex - Math.floor(pageSize / 2), filtered.length - pageSize));
+    }
+    const visible = filtered.slice(scrollOffset, scrollOffset + pageSize);
+
+    if (visible.length === 0) {
+      lines.push(`  ${pc.dim('No agents matching "' + searchQuery + '"')}`);
+    } else {
+      for (let i = 0; i < visible.length; i++) {
+        const item = visible[i]!;
+        const actualIndex = scrollOffset + i;
+        const isPointer = actualIndex === cursorIndex;
+        const isSelected = selectedSet.has(item.id) || (item.id === 'claude-code' && selectedSet.has('claude'));
+
+        const pointer = isPointer ? pc.cyan('❯') : ' ';
+        const check = isSelected ? pc.green('●') : pc.dim('o');
+        const name = isPointer ? pc.bold(pc.white(item.displayName)) : item.displayName;
+        const dir = pc.dim(`(${item.skillsDir})`);
+
+        lines.push(`${pointer} ${check} ${name} ${dir}`);
+      }
+    }
+
+    const remainingBelow = filtered.length - (scrollOffset + pageSize);
+    const remainingAbove = scrollOffset;
+    if (remainingBelow > 0 && remainingAbove > 0) {
+      lines.push(`  ${pc.dim(`↑ ${remainingAbove} more / ↓ ${remainingBelow} more`)}`);
+    } else if (remainingBelow > 0) {
+      lines.push(`  ${pc.dim(`↓ ${remainingBelow} more`)}`);
+    } else if (remainingAbove > 0) {
+      lines.push(`  ${pc.dim(`↑ ${remainingAbove} more`)}`);
+    } else {
+      lines.push('');
+    }
+
+    lines.push('');
+    const summary = formatSelectedSummary(selectedSet);
+    lines.push(`  ${pc.green(pc.bold('Selected:'))} ${pc.green(summary)}`);
+
+    // Clear previous output
+    if (lastRenderedLines > 0) {
+      process.stdout.write(`\x1b[${lastRenderedLines}A\r`);
+      for (let i = 0; i < lastRenderedLines; i++) {
+        process.stdout.write('\x1b[2K\n');
+      }
+      process.stdout.write(`\x1b[${lastRenderedLines}A\r`);
+    }
+
+    process.stdout.write(lines.join('\n') + '\n');
+    lastRenderedLines = lines.length;
+  };
+
+  return new Promise((resolve, reject) => {
+    // Hide terminal cursor
+    process.stdout.write('\x1b[?25l');
+    render();
+
+    const cleanup = () => {
+      process.stdout.write('\x1b[?25h');
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+      process.stdin.removeListener('data', onData);
+    };
+
+    const onData = (chunk: Buffer) => {
+      const input = chunk.toString();
+
+      // Ctrl+C
+      if (input === '\u0003') {
+        cleanup();
+        reject(new Error('Setup cancelled'));
+        return;
+      }
+
+      // Enter
+      if (input === '\r' || input === '\n') {
+        cleanup();
+        process.stdout.write('\n');
+        resolve(Array.from(selectedSet));
+        return;
+      }
+
+      // Up arrow
+      if (input === '\u001b[A') {
+        cursorIndex = Math.max(0, cursorIndex - 1);
+        render();
+        return;
+      }
+
+      // Down arrow
+      if (input === '\u001b[B') {
+        const filtered = getFiltered();
+        cursorIndex = Math.min(filtered.length - 1, cursorIndex + 1);
+        render();
+        return;
+      }
+
+      // Spacebar
+      if (input === ' ') {
+        const filtered = getFiltered();
+        const current = filtered[cursorIndex];
+        if (current) {
+          if (selectedSet.has(current.id)) {
+            selectedSet.delete(current.id);
+            if (current.id === 'claude-code') selectedSet.delete('claude');
+          } else {
+            selectedSet.add(current.id);
+            if (current.id === 'claude-code') selectedSet.add('claude');
+          }
+        }
+        render();
+        return;
+      }
+
+      // Backspace
+      if (input === '\x7f' || input === '\b' || input === '\x08') {
+        if (searchQuery.length > 0) {
+          searchQuery = searchQuery.slice(0, -1);
+          cursorIndex = 0;
+          render();
+        }
+        return;
+      }
+
+      // Alphanumeric or normal printable characters
+      if (input.length === 1 && input >= ' ' && input <= '~') {
+        searchQuery += input;
+        cursorIndex = 0;
+        render();
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+````
+
+````src/cli/banner.ts
+import pc from 'picocolors';
+import type { DetectedIntegrations } from '../integrations/config.js';
+import { UNIVERSAL_AGENTS, ALL_AGENTS } from '../integrations/agents.js';
+
+export const TESTWEAVE_BANNER = `
+  ████████╗███████╗███████╗████████╗██╗    ██╗███████╗ █████╗ ██╗   ██╗███████╗
+  ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██║    ██║██╔════╝██╔══██╗██║   ██║██╔════╝
+     ██║   █████╗  ███████╗   ██║   ██║ █╗ ██║█████╗  ███████║██║   ██║█████╗  
+     ██║   ██╔══╝  ╚════██║   ██║   ██║███╗██║██╔══╝  ██╔══██║╚██╗ ██╔╝██╔══╝  
+     ██║   ███████╗███████║   ██║   ╚███╔███╔╝███████╗██║  ██║ ╚████╔╝ ███████╗
+     ╚═╝   ╚══════╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝
+`;
+
+export const TESTWEAVE_BANNER_COMPACT = `
+  ████████╗███████╗███████╗████████╗██╗    ██╗███████╗
+  ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██║    ██║██╔════╝
+     ██║   █████╗  ███████╗   ██║   ██║ █╗ ██║█████╗  
+     ██║   ██╔══╝  ╚════██║   ██║   ██║███╗██║██╔══╝  
+     ██║   ███████╗███████║   ██║   ╚███╔███╔╝███████╗
+     ╚═╝   ╚══════╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚══════╝
+`;
+
+export function printBanner(log: (msg: string) => void): void {
+  const cols = process.stdout.columns ?? 80;
+  const banner = cols < 80 ? TESTWEAVE_BANNER_COMPACT : TESTWEAVE_BANNER;
+  log(pc.bold(pc.white(banner.trimEnd())));
+  log(`  ${pc.bgCyan(pc.black(pc.bold(' testweave ')))} \n`);
+}
+
+export function printSetupOverview(
+  root: string,
+  detected: DetectedIntegrations,
+  log: (msg: string) => void
+): void {
+  const diamond = pc.green('◇');
+  const dot = pc.blue('●');
+
+  log(`${diamond} Workspace: ${root}`);
+  log(`${diamond} Git: ${detected.git ? 'detected' : 'not detected'}`);
+  if (detected.ides.length > 0) {
+    log(`${diamond} Detected IDEs: ${detected.ides.join(', ')}`);
+  }
+  log(`${diamond} Found 1 skill`);
+  log(`${dot} Selected 1 skill: ${pc.bold(pc.cyan('testweave'))}`);
+  log(`${diamond} ${ALL_AGENTS.length} agents`);
+  log(pc.bold('Which agents do you want to install to?\n'));
+
+  // Universal agents section
+  log(pc.dim('── ') + pc.white('Universal (.agents/skills)') + pc.dim(' ── always included ──────────────'));
+  
+  const displayUniversal = UNIVERSAL_AGENTS.filter((a) => a.id !== 'universal');
+  const previewUniversal = displayUniversal.slice(0, 13);
+  const remainingCount = displayUniversal.length - previewUniversal.length;
+
+  for (const agent of previewUniversal) {
+    log(`  ${pc.dim('•')} ${pc.white(agent.displayName)}`);
+  }
+  if (remainingCount > 0) {
+    log(`  ${pc.dim(`...and ${remainingCount} more`)}`);
+  }
+  log('');
+}
 ````
 
 ````src/cli/context.ts
@@ -220,7 +513,7 @@ import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.1.0')
+  const program = new Command().name('testweave').version('0.2.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -228,7 +521,7 @@ export function createProgram(): Command {
     const options = program.opts<{ cwd: string }>();
     return createContext(options.cwd);
   };
-  program.command('init').description('Detect integrations and initialize the QA contract')
+  program.command('init').alias('setup').description('Detect integrations and initialize the QA contract')
     .option('-y, --yes', 'Accept default integrations without prompting')
     .option('--no-hook', 'Skip installing a Git hook')
     .action(async (options: InitOptions) => { await runInit(await context(), options); });
@@ -289,26 +582,47 @@ import { createTestTruth } from '../schema/test-truth.js';
 import { detectIntegrations, readConfig, saveConfig, type ProjectConfig } from '../integrations/config.js';
 import { installIdeRules } from '../integrations/ide.js';
 import { installHook } from '../integrations/hooks.js';
+import { printBanner, printSetupOverview } from './banner.js';
+import { formatSelectedSummary } from './agent-selector.js';
 
 export interface InitOptions { yes?: boolean; hook?: boolean }
+
 export async function runInit(context: CliContext, options: InitOptions, prompt: UserPrompter = new TerminalPrompter()): Promise<void> {
+  printBanner(context.output.log);
+
   const detected = detectIntegrations(context.root);
   const previous = await readConfig(context.root);
-  context.output.log(`Workspace: ${context.root}\nGit: ${detected.git ? 'detected' : 'not detected'}\nIDEs: ${detected.ides.join(', ') || 'none'}\nCI: ${detected.ci.join(', ') || 'none'}\nHusky: ${detected.husky ? 'detected' : 'not detected'}`);
-  const defaults = previous?.integrations ?? [...new Set(['cursor' as const, 'claude' as const, ...detected.ides])];
-  const integrations = options.yes ? defaults : await prompt.integrations(defaults);
+
+  printSetupOverview(context.root, detected, context.output.log);
+
+  const defaults = previous?.integrations ?? [...new Set(['universal', 'cursor', 'claude', ...detected.ides])];
+  let integrations: string[];
+
+  if (options.yes) {
+    const summary = formatSelectedSummary(new Set(defaults));
+    context.output.log(`  ${pc.green(pc.bold('Selected:'))} ${pc.green(summary)}\n`);
+    integrations = defaults;
+  } else {
+    integrations = await prompt.integrations(defaults);
+  }
+
   const config: ProjectConfig = {
-    version: 1, integrations,
+    version: 1,
+    integrations,
     hook: options.hook !== false && detected.git && (previous?.hook ?? true),
   };
-  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject ${integrations.join(', ') || 'no IDE'} rules, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
-    context.output.log('Setup cancelled'); return;
+
+  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
+    context.output.log('Setup cancelled');
+    return;
   }
+
   const created = await context.store.initialize(createTestTruth(path.basename(context.root)));
   await installIdeRules(context.root, config.integrations);
   if (config.hook) await installHook(context.root, context.git);
   await saveConfig(context.root, config);
-  context.output.log(pc.green(`TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
+
+  context.output.log(pc.green(`✔ TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
 }
 ````
@@ -316,31 +630,29 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
 ````src/cli/prompts.ts
 import prompts from 'prompts';
 import { z } from 'zod';
-import { integrationSchema, type IdeIntegration } from '../integrations/config.js';
+import type { IdeIntegration } from '../integrations/config.js';
+import { promptAgentSelection } from './agent-selector.js';
 
 export interface UserPrompter {
   confirm(message: string): Promise<boolean>;
   integrations(selected: IdeIntegration[]): Promise<IdeIntegration[]>;
 }
+
 export class TerminalPrompter implements UserPrompter {
   constructor(private readonly interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)) {}
+
   private requireTerminal(): void {
     if (!this.interactive) throw new Error('Interactive input is unavailable. Use --yes for init or --fix for doctor.');
   }
+
   async confirm(message: string): Promise<boolean> {
     this.requireTerminal();
     const answer: unknown = await prompts({ type: 'confirm', name: 'confirmed', message, initial: true });
     return z.object({ confirmed: z.boolean().optional() }).parse(answer).confirmed ?? false;
   }
+
   async integrations(selected: IdeIntegration[]): Promise<IdeIntegration[]> {
-    this.requireTerminal();
-    const answer: unknown = await prompts({
-      type: 'multiselect', name: 'integrations', message: 'Choose IDE integrations',
-      choices: (['cursor', 'claude', 'vscode'] as const).map((value) => ({ title: value, value, selected: selected.includes(value) })),
-    });
-    const result = z.object({ integrations: z.array(integrationSchema).optional() }).parse(answer);
-    if (!result.integrations) throw new Error('Setup cancelled');
-    return result.integrations;
+    return promptAgentSelection(selected, this.interactive);
   }
 }
 ````
@@ -754,6 +1066,8 @@ export * from './engine/git.js';
 export * from './engine/drift.js';
 export * from './engine/doctor.js';
 export * from './integrations/config.js';
+export * from './integrations/agents.js';
+export * from './integrations/skills.js';
 export * from './integrations/ide.js';
 export * from './integrations/vscode.js';
 export * from './integrations/runtime.js';
@@ -767,14 +1081,134 @@ export * from './llm/anthropic.js';
 export * from './mcp/server.js';
 ````
 
+````src/integrations/agents.ts
+export interface AgentDefinition {
+  id: string;
+  displayName: string;
+  skillsDir: string;
+  isUniversal?: boolean;
+}
+
+export const UNIVERSAL_AGENTS: AgentDefinition[] = [
+  { id: 'amp', displayName: 'Amp', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'antigravity', displayName: 'Antigravity', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'antigravity-cli', displayName: 'Antigravity CLI', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'cline', displayName: 'Cline', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'codex', displayName: 'Codex', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'cursor', displayName: 'Cursor', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'deepagents', displayName: 'Deep Agents', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'dexto', displayName: 'Dexto', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'droid', displayName: 'Droid', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'firebender', displayName: 'Firebender', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'fx', displayName: 'fx', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'gemini-cli', displayName: 'Gemini CLI', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'github-copilot', displayName: 'GitHub Copilot', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'kilo', displayName: 'Kilo Code', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'kimi-code-cli', displayName: 'Kimi Code CLI', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'loaf', displayName: 'Loaf', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'opencode', displayName: 'OpenCode', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'pi', displayName: 'Pi', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'replit', displayName: 'Replit', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'sarvam-code', displayName: 'Sarvam Code', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'warp', displayName: 'Warp', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'zed', displayName: 'Zed', skillsDir: '.agents/skills', isUniversal: true },
+  { id: 'promptscript', displayName: 'PromptScript', skillsDir: '.agents/skills', isUniversal: true },
+];
+
+export const ADDITIONAL_AGENTS: AgentDefinition[] = [
+  { id: 'aider-desk', displayName: 'AiderDesk', skillsDir: '.aider-desk/skills' },
+  { id: 'astrbot', displayName: 'AstrBot', skillsDir: 'data/skills' },
+  { id: 'autohand-code', displayName: 'AutoHand Code CLI', skillsDir: '.autohand/skills' },
+  { id: 'augment', displayName: 'Augment', skillsDir: '.augment/skills' },
+  { id: 'bob', displayName: 'IBM Bob', skillsDir: '.bob/skills' },
+  { id: 'claude-code', displayName: 'Claude Code', skillsDir: '.claude/skills' },
+  { id: 'openclaw', displayName: 'OpenClaw', skillsDir: 'skills' },
+  { id: 'codearts-agent', displayName: 'CodeArts Agent', skillsDir: '.codeartsdoer/skills' },
+  { id: 'codebuddy', displayName: 'CodeBuddy', skillsDir: '.codebuddy/skills' },
+  { id: 'codemaker', displayName: 'Codemaker', skillsDir: '.codemaker/skills' },
+  { id: 'codestudio', displayName: 'Code Studio', skillsDir: '.codestudio/skills' },
+  { id: 'command-code', displayName: 'Command Code', skillsDir: '.commandcode/skills' },
+  { id: 'continue', displayName: 'Continue', skillsDir: '.continue/skills' },
+  { id: 'cortex', displayName: 'Cortex Code', skillsDir: '.cortex/skills' },
+  { id: 'crush', displayName: 'Crush', skillsDir: '.crush/skills' },
+  { id: 'devin', displayName: 'Devin for Terminal', skillsDir: '.devin/skills' },
+  { id: 'eve', displayName: 'Eve', skillsDir: 'agent/skills' },
+  { id: 'forgecode', displayName: 'ForgeCode', skillsDir: '.forge/skills' },
+  { id: 'goose', displayName: 'Goose', skillsDir: '.goose/skills' },
+  { id: 'grok', displayName: 'Grok Build', skillsDir: '.grok/skills' },
+  { id: 'hermes-agent', displayName: 'Hermes Agent', skillsDir: '.hermes/skills' },
+  { id: 'inference-sh', displayName: 'inference.sh', skillsDir: '.inferencesh/skills' },
+  { id: 'jazz', displayName: 'Jazz', skillsDir: '.jazz/skills' },
+  { id: 'junie', displayName: 'Junie', skillsDir: '.junie/skills' },
+  { id: 'iflow-cli', displayName: 'iFlow CLI', skillsDir: '.iflow/skills' },
+  { id: 'kimchi', displayName: 'Kimchi', skillsDir: '.kimchi/skills' },
+  { id: 'kiro-cli', displayName: 'Kiro CLI', skillsDir: '.kiro/skills' },
+  { id: 'kode', displayName: 'Kode', skillsDir: '.kode/skills' },
+  { id: 'lingma', displayName: 'Lingma', skillsDir: '.lingma/skills' },
+  { id: 'mcpjam', displayName: 'MCPJam', skillsDir: '.mcpjam/skills' },
+  { id: 'minimax-code', displayName: 'MiniMax Code', skillsDir: '.minimax/skills' },
+  { id: 'mistral-vibe', displayName: 'Mistral Vibe', skillsDir: '.vibe/skills' },
+  { id: 'moxby', displayName: 'Moxby', skillsDir: '.moxby/skills' },
+  { id: 'mux', displayName: 'Mux', skillsDir: '.mux/skills' },
+  { id: 'openhands', displayName: 'OpenHands', skillsDir: '.openhands/skills' },
+  { id: 'ona', displayName: 'Ona', skillsDir: '.ona/skills' },
+  { id: 'posit-assistant', displayName: 'Posit Assistant', skillsDir: '.posit/assistant/skills' },
+  { id: 'qoder', displayName: 'Qoder', skillsDir: '.qoder/skills' },
+  { id: 'qoder-cn', displayName: 'Qoder CN', skillsDir: '.qoder/skills' },
+  { id: 'qwen-code', displayName: 'Qwen Code', skillsDir: '.qwen/skills' },
+  { id: 'reasonix', displayName: 'Reasonix', skillsDir: '.reasonix/skills' },
+  { id: 'rovodev', displayName: 'Rovo Dev', skillsDir: '.rovodev/skills' },
+  { id: 'roo', displayName: 'Roo Code', skillsDir: '.roo/skills' },
+  { id: 'tabnine-cli', displayName: 'Tabnine CLI', skillsDir: '.tabnine/agent/skills' },
+  { id: 'terramind', displayName: 'Terramind', skillsDir: '.terramind/skills' },
+  { id: 'tinycloud', displayName: 'Tinycloud', skillsDir: '.tinycloud/skills' },
+  { id: 'trae', displayName: 'Trae', skillsDir: '.trae/skills' },
+  { id: 'trae-cn', displayName: 'Trae CN', skillsDir: '.trae/skills' },
+  { id: 'vscode', displayName: 'VS Code', skillsDir: '.vscode' },
+  { id: 'windsurf', displayName: 'Windsurf', skillsDir: '.windsurf/skills' },
+  { id: 'zcode', displayName: 'ZCode', skillsDir: '.zcode/skills' },
+  { id: 'zencoder', displayName: 'Zencoder', skillsDir: '.zencoder/skills' },
+  { id: 'zenflow', displayName: 'Zenflow', skillsDir: '.zencoder/skills' },
+  { id: 'neovate', displayName: 'Neovate', skillsDir: '.neovate/skills' },
+  { id: 'pochi', displayName: 'Pochi', skillsDir: '.pochi/skills' },
+  { id: 'adal', displayName: 'AdaL', skillsDir: '.adal/skills' },
+];
+
+export const ALL_AGENTS: AgentDefinition[] = [...UNIVERSAL_AGENTS, ...ADDITIONAL_AGENTS];
+
+export function findAgent(idOrName: string): AgentDefinition | undefined {
+  const normalized = idOrName.toLowerCase().trim();
+  if (normalized === 'claude') {
+    return ADDITIONAL_AGENTS.find((a) => a.id === 'claude-code');
+  }
+  if (normalized === 'universal') {
+    return { id: 'universal', displayName: 'Universal', skillsDir: '.agents/skills', isUniversal: true };
+  }
+  return ALL_AGENTS.find(
+    (a) => a.id.toLowerCase() === normalized || a.displayName.toLowerCase() === normalized
+  );
+}
+
+export function getSkillsDirForAgent(agentId: string): string {
+  const agent = findAgent(agentId);
+  if (!agent) {
+    if (agentId === 'universal' || agentId === 'cursor') return '.agents/skills';
+    if (agentId === 'claude' || agentId === 'claude-code') return '.claude/skills';
+    if (agentId === 'vscode') return '.vscode';
+    return '.agents/skills';
+  }
+  return agent.skillsDir;
+}
+````
+
 ````src/integrations/config.ts
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, readOptional } from '../engine/files.js';
 
-export const integrationSchema = z.enum(['cursor', 'claude', 'vscode']);
-export type IdeIntegration = z.infer<typeof integrationSchema>;
+export const integrationSchema = z.string().min(1);
+export type IdeIntegration = string;
 export const configSchema = z.strictObject({
   version: z.literal(1),
   integrations: z.array(integrationSchema),
@@ -782,20 +1216,30 @@ export const configSchema = z.strictObject({
 });
 export type ProjectConfig = z.infer<typeof configSchema>;
 export interface DetectedIntegrations { git: boolean; ides: IdeIntegration[]; ci: string[]; husky: boolean }
+
 export function detectIntegrations(root: string): DetectedIntegrations {
   const exists = (name: string): boolean => existsSync(path.join(root, name));
+  const detectedIdes: IdeIntegration[] = [];
+  if (exists('.cursorrules') || exists('.cursor')) detectedIdes.push('cursor');
+  if (exists('CLAUDE.md') || exists('.claude')) detectedIdes.push('claude');
+  if (exists('.vscode')) detectedIdes.push('vscode');
+  if (exists('.windsurfrules') || exists('.windsurf')) detectedIdes.push('windsurf');
+  if (exists('.aider-desk')) detectedIdes.push('aider-desk');
+  if (exists('.agents/skills')) detectedIdes.push('universal');
+
   return {
-    git: exists('.git'), husky: exists('.husky'),
-    ides: [exists('.cursorrules') || exists('.cursor') ? 'cursor' : undefined,
-      exists('CLAUDE.md') || exists('.claude') ? 'claude' : undefined,
-      exists('.vscode') ? 'vscode' : undefined].filter((value): value is IdeIntegration => value !== undefined),
+    git: exists('.git'),
+    husky: exists('.husky'),
+    ides: detectedIdes,
     ci: ['.github/workflows', '.gitlab-ci.yml', 'azure-pipelines.yml', '.circleci/config.yml', 'Jenkinsfile'].filter(exists),
   };
 }
+
 export async function readConfig(root: string): Promise<ProjectConfig | undefined> {
   const text = await readOptional(path.join(root, '.testweave.json'));
   return text === undefined ? undefined : configSchema.parse(JSON.parse(text) as unknown);
 }
+
 export async function saveConfig(root: string, config: ProjectConfig): Promise<void> {
   await atomicWrite(path.join(root, '.testweave.json'), JSON.stringify(configSchema.parse(config), null, 2) + '\n');
 }
@@ -947,6 +1391,8 @@ export async function checkHook(root: string, git: GitRepository, cliPath = file
 import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
 import type { IdeIntegration } from './config.js';
 import { installVsCodeServer, hasVsCodeServer } from './vscode.js';
+import { installSkill, hasSkill } from './skills.js';
+import { getSkillsDirForAgent } from './agents.js';
 
 export const RULE_START = '<!-- testweave:start -->';
 export const RULE_END = '<!-- testweave:end -->';
@@ -961,9 +1407,15 @@ export const QA_RULES = `${RULE_START}
 - Run testweave sync before committing; commit test-truth.md with the corresponding source changes.
 - Do not bypass the pre-push hook or weaken policy to conceal QA drift.
 ${RULE_END}`;
-export const IDE_FILES: Record<IdeIntegration, string> = {
-  cursor: '.cursorrules', claude: 'CLAUDE.md', vscode: '.github/instructions/testweave.instructions.md',
+
+export const IDE_FILES: Record<string, string> = {
+  cursor: '.cursorrules',
+  claude: 'CLAUDE.md',
+  'claude-code': 'CLAUDE.md',
+  vscode: '.github/instructions/testweave.instructions.md',
+  windsurf: '.windsurfrules',
 };
+
 export function injectRules(text: string): string {
   const start = text.indexOf(RULE_START);
   const end = text.indexOf(RULE_END);
@@ -972,19 +1424,40 @@ export function injectRules(text: string): string {
     text.indexOf(RULE_END, end + RULE_END.length) !== -1) throw new Error('Malformed TestWeave rule markers; repair markers without removing your existing rules');
   return text.slice(0, start) + QA_RULES + text.slice(end + RULE_END.length);
 }
+
 export async function installIdeRules(root: string, integrations: IdeIntegration[]): Promise<void> {
   for (const integration of integrations) {
-    const file = await workspacePath(root, IDE_FILES[integration]);
-    let text = await readOptional(file) ?? '';
-    if (integration === 'vscode' && !text) text = '---\napplyTo: "**"\n---\n\n';
-    await atomicWrite(file, injectRules(text));
-    if (integration === 'vscode') await installVsCodeServer(root);
+    const ruleFile = IDE_FILES[integration];
+    if (ruleFile) {
+      const file = await workspacePath(root, ruleFile);
+      let text = await readOptional(file) ?? '';
+      if (integration === 'vscode' && !text) text = '---\napplyTo: "**"\n---\n\n';
+      await atomicWrite(file, injectRules(text));
+      if (integration === 'vscode') await installVsCodeServer(root);
+    }
+    const skillsDir = getSkillsDirForAgent(integration);
+    if (skillsDir && skillsDir !== '.vscode') {
+      await installSkill(root, skillsDir);
+    }
   }
 }
+
 export async function hasIdeRules(root: string, integration: IdeIntegration): Promise<boolean> {
-  const text = await readOptional(await workspacePath(root, IDE_FILES[integration]));
-  return text !== undefined && text.includes(QA_RULES) && injectRules(text) === text &&
-    (integration !== 'vscode' || await hasVsCodeServer(root));
+  const ruleFile = IDE_FILES[integration];
+  if (ruleFile) {
+    const text = await readOptional(await workspacePath(root, ruleFile));
+    const rulesOk = text !== undefined && text.includes(QA_RULES) && injectRules(text) === text;
+    if (!rulesOk) return false;
+    if (integration === 'vscode') {
+      return await hasVsCodeServer(root);
+    }
+    return true;
+  }
+  const skillsDir = getSkillsDirForAgent(integration);
+  if (skillsDir && skillsDir !== '.vscode') {
+    return await hasSkill(root, skillsDir);
+  }
+  return true;
 }
 ````
 
@@ -1015,6 +1488,88 @@ export function runtimeLaunch(cliPath: string, environment: RuntimeEnvironment =
     if (environment.exists(esmLoader)) args.push('--experimental-loader', pathToFileURL(esmLoader).href);
   }
   return { command: environment.executable, args: [...args, cliPath] };
+}
+````
+
+````src/integrations/skills.ts
+import path from 'node:path';
+import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
+
+export const TESTWEAVE_SKILL_NAME = 'testweave';
+
+export const TESTWEAVE_SKILL_CONTENT = `---
+name: testweave
+description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when inspecting, adding, editing, or testing code to check test-truth.md, prevent QA drift, update test cases, and sync contracts.
+---
+
+# TestWeave QA Contract Skill
+
+TestWeave keeps manual QA test contracts (\`test-truth.md\`) synchronized with source code modifications. Every change in system behavior must be matched by corresponding, updated test coverage in \`test-truth.md\`.
+
+## Core Principles
+
+1. **Evidence over assumptions**: Never claim a test was executed without actual evidence. This contract describes tests and acceptance criteria, not execution results.
+2. **Read the contract first**: Inspect \`test-truth.md\` before altering source behavior.
+3. **Path coverage**: Every modified source file must match at least one registered module's paths pattern.
+4. **Synchronized updates**: When editing code, update that module's manual test actions and expected results in the same commit.
+5. **Scenario diversity**: Include success, failure, and edge/boundary scenarios. Keep test IDs stable and globally unique.
+6. **Zero drift before committing**: Run \`testweave sync\` before committing. Staged changes must pass without unmapped or stale module drift.
+7. **Preserve policy**: Never bypass Git pre-push hooks or loosen warning policies to conceal QA drift.
+
+## When to Use This Skill
+
+- **Planning code changes**: Review which modules and test cases cover the files you will touch.
+- **Adding new features**: Register new modules with comprehensive test plans and valid file paths.
+- **Refactoring or fixing bugs**: Update existing manual test actions, expected results, or add regression test cases.
+- **Pre-commit verification**: Run \`testweave sync\` to confirm zero QA drift.
+- **System diagnostics**: Run \`testweave doctor\` to ensure configuration, agent rules, and hooks are intact.
+
+## Tools & Commands
+
+### MCP Tools (when running in MCP-enabled agent)
+- \`get_contract\`: Inspect the current QA contract, registered modules, paths, and test cases.
+- \`upsert_test_module\`: Add or update a module in \`test-truth.md\` with stable test IDs, actions, and expected results.
+- \`check_drift\`: Verify whether working tree changes or diffs diverge from the QA contract.
+
+### CLI Commands
+- \`testweave sync\`: Check source changes against QA contract.
+  - \`--strict\`: Block on drift even if policy is set to warn.
+  - \`--base <ref>\`: Compare against a specific Git revision instead of upstream.
+  - \`--json\`: Output machine-readable drift report.
+- \`testweave doctor\`: Validate the contract, agent rules, and Git pre-push hook.
+  - \`--fix\`: Automatically repair missing rules or hooks without losing contracts.
+- \`testweave generate\`: Export manual tests for Jira, Xray, or Zephyr, or draft modules with AI.
+  - \`--target <jira|xray|zephyr>\`: Target QA tracking system.
+  - \`--format <csv|json>\`: Export format.
+  - \`--provider <openai|anthropic>\`: AI module drafting.
+- \`testweave init\` / \`testweave setup\`: Initialize contract, agent skills, and Git pre-push hook.
+  - \`-y, --yes\`: Accept defaults non-interactively.
+
+## Development Workflow
+
+1. **Read Contract**: Open \`test-truth.md\` or call \`get_contract\` to inspect existing test coverage for target files.
+2. **Implement Changes**: Modify the source code.
+3. **Update Test Contract**: Update or add test cases with clear actions and expected outcomes matching the new behavior.
+4. **Verify Alignment**: Run \`testweave sync\` (or call \`check_drift\`) to ensure zero drift.
+5. **Commit Together**: Commit \`test-truth.md\` in the exact same commit as the source code changes.
+`;
+
+export async function installSkill(root: string, skillsDir: string): Promise<string> {
+  const relativeFile = path.join(skillsDir, TESTWEAVE_SKILL_NAME, 'SKILL.md');
+  const file = await workspacePath(root, relativeFile);
+  await atomicWrite(file, TESTWEAVE_SKILL_CONTENT);
+  return file;
+}
+
+export async function hasSkill(root: string, skillsDir: string): Promise<boolean> {
+  try {
+    const relativeFile = path.join(skillsDir, TESTWEAVE_SKILL_NAME, 'SKILL.md');
+    const file = await workspacePath(root, relativeFile);
+    const content = await readOptional(file);
+    return content !== undefined && content.includes('name: testweave') && content.includes('TestWeave QA Contract Skill');
+  } catch {
+    return false;
+  }
 }
 ````
 
@@ -1175,7 +1730,7 @@ async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.1.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.2.0' });
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',
@@ -1274,6 +1829,135 @@ export function createTestTruth(project: string): TestTruth {
     modules: [],
   });
 }
+````
+
+````tests/agents-skills.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import {
+  ALL_AGENTS,
+  UNIVERSAL_AGENTS,
+  ADDITIONAL_AGENTS,
+  findAgent,
+  getSkillsDirForAgent,
+} from '../src/integrations/agents.js';
+import {
+  TESTWEAVE_SKILL_NAME,
+  TESTWEAVE_SKILL_CONTENT,
+  installSkill,
+  hasSkill,
+} from '../src/integrations/skills.js';
+import { installIdeRules, hasIdeRules } from '../src/integrations/ide.js';
+import { printBanner, printSetupOverview } from '../src/cli/banner.js';
+import { formatSelectedSummary } from '../src/cli/agent-selector.js';
+import { temporaryDirectory } from './helpers.js';
+
+const cliPath = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+const exec = promisify(execFile);
+
+test('agent directory defines 79 agents split into universal and additional', () => {
+  assert.equal(ALL_AGENTS.length, 79);
+  assert.equal(UNIVERSAL_AGENTS.length, 23);
+  assert.equal(ADDITIONAL_AGENTS.length, 56);
+
+  // Universal agents check
+  const amp = findAgent('amp');
+  assert.ok(amp);
+  assert.equal(amp.displayName, 'Amp');
+  assert.equal(amp.skillsDir, '.agents/skills');
+  assert.equal(amp.isUniversal, true);
+
+  // Additional agents check
+  const aider = findAgent('aider-desk');
+  assert.ok(aider);
+  assert.equal(aider.displayName, 'AiderDesk');
+  assert.equal(aider.skillsDir, '.aider-desk/skills');
+
+  // Alias lookup
+  const claude = findAgent('claude');
+  assert.ok(claude);
+  assert.equal(claude.displayName, 'Claude Code');
+  assert.equal(claude.skillsDir, '.claude/skills');
+
+  assert.equal(getSkillsDirForAgent('universal'), '.agents/skills');
+  assert.equal(getSkillsDirForAgent('claude'), '.claude/skills');
+  assert.equal(getSkillsDirForAgent('aider-desk'), '.aider-desk/skills');
+});
+
+test('TestWeave custom skill installs and validates SKILL.md format', async (t) => {
+  const root = await temporaryDirectory(t);
+  assert.equal(TESTWEAVE_SKILL_NAME, 'testweave');
+  assert.match(TESTWEAVE_SKILL_CONTENT, /name: testweave/);
+  assert.match(TESTWEAVE_SKILL_CONTENT, /# TestWeave QA Contract Skill/);
+
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+  const installedFile = await installSkill(root, '.agents/skills');
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+
+  const content = await readFile(installedFile, 'utf8');
+  assert.match(content, /description: Keep manual QA contracts aligned/);
+  assert.match(content, /get_contract/);
+  assert.match(content, /upsert_test_module/);
+  assert.match(content, /testweave sync/);
+});
+
+test('installIdeRules installs custom skill and agent rules across multiple agent targets', async (t) => {
+  const root = await temporaryDirectory(t);
+
+  await installIdeRules(root, ['universal', 'claude', 'aider-desk']);
+
+  // Universal skill
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await hasIdeRules(root, 'universal'), true);
+
+  // Claude rules and skill
+  assert.equal(await hasIdeRules(root, 'claude'), true);
+  assert.equal(await hasSkill(root, '.claude/skills'), true);
+  const claudeRules = await readFile(path.join(root, 'CLAUDE.md'), 'utf8');
+  assert.match(claudeRules, /TestWeave QA contract/);
+
+  // AiderDesk dedicated skill
+  assert.equal(await hasIdeRules(root, 'aider-desk'), true);
+  assert.equal(await hasSkill(root, '.aider-desk/skills'), true);
+});
+
+test('formatSelectedSummary formats agent selection summary properly', () => {
+  const set1 = new Set(['universal']);
+  assert.equal(formatSelectedSummary(set1), 'Amp, Cline, Codex +11 more');
+
+  const set2 = new Set(['universal', 'claude']);
+  assert.equal(formatSelectedSummary(set2), 'Amp, Cline, Codex +12 more');
+
+  const set3 = new Set(['aider-desk']);
+  assert.equal(formatSelectedSummary(set3), 'AiderDesk');
+});
+
+test('banner and setup overview render without throwing', () => {
+  const logs: string[] = [];
+  printBanner((msg) => logs.push(msg));
+  assert.ok(logs.some((l) => l.includes('testweave')));
+
+  printSetupOverview('/mock/workspace', { git: true, ides: ['cursor'], ci: [], husky: false }, (msg) => logs.push(msg));
+  assert.ok(logs.some((l) => l.includes('79 agents')));
+  assert.ok(logs.some((l) => l.includes('Universal (.agents/skills)')));
+});
+
+test('compiled CLI supports setup alias identically to init', async (t) => {
+  const root = await temporaryDirectory(t);
+  const setup = await exec(process.execPath, [cliPath, '--cwd', root, 'setup', '--yes']);
+  assert.match(setup.stdout, /initialized/);
+  assert.match(setup.stdout, /79 agents/);
+
+  // Verify that universal skill was installed
+  const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
+  const skillContent = await readFile(skillFile, 'utf8');
+  assert.match(skillContent, /name: testweave/);
+});
 ````
 
 ````tests/contract.test.ts
@@ -1833,7 +2517,8 @@ const entry = manager === 'bun' ? bunExecutable : nodeEntries[manager];
 if (!entry || !existsSync(entry)) throw new Error('Install verification tools first; run this script through npm run check:manager');
 const binary = manager === 'bun' ? entry : process.execPath;
 const prefix = manager === 'bun' ? [] : [entry];
-const tarball = path.join(repository, 'testweave-0.1.0.tgz');
+const packageJson = JSON.parse(await readFile(path.join(repository, 'package.json'), 'utf8'));
+const tarball = path.join(repository, `testweave-${packageJson.version}.tgz`);
 if (!existsSync(tarball)) throw new Error('Run npm pack before checking package managers');
 const directory = await mkdtemp(path.join(tmpdir(), 'testweave-manager-'));
 const root = path.join(directory, 'project with spaces');
@@ -1873,7 +2558,7 @@ try {
   }[manager];
   await pm(install);
   const version = await cli(['--version']);
-  assert.match(version.stdout, /0\.1\.0/);
+  assert.match(version.stdout, new RegExp(packageJson.version));
   await run('git', ['init', '-b', 'main']);
   await run('git', ['config', 'user.name', 'TestWeave install tests']);
   await run('git', ['config', 'user.email', 'testweave@example.invalid']);
@@ -2250,6 +2935,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2280,4 +2966,26 @@ jobs:
             "$RUNNER_TEMP/testweave-"*.tgz "$RUNNER_TEMP/SHA256SUMS" \
             --verify-tag --title "TestWeave $RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gpr"
+          tar -xzf "$RUNNER_TEMP/testweave-"*.tgz -C "$RUNNER_TEMP/gpr"
+          node -e '
+            const fs = require("node:fs");
+            const pkgPath = "'"$RUNNER_TEMP"'/gpr/package/package.json";
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            pkg.name = "@alexisrellon/testweave";
+            pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
+            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+          '
+          cd "$RUNNER_TEMP/gpr/package"
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
+          publish_args=(--access public --registry=https://npm.pkg.github.com)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            publish_args+=(--tag next)
+          fi
+          npm publish "${publish_args[@]}"
 ````

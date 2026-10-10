@@ -6,25 +6,46 @@ import { createTestTruth } from '../schema/test-truth.js';
 import { detectIntegrations, readConfig, saveConfig, type ProjectConfig } from '../integrations/config.js';
 import { installIdeRules } from '../integrations/ide.js';
 import { installHook } from '../integrations/hooks.js';
+import { printBanner, printSetupOverview } from './banner.js';
+import { formatSelectedSummary } from './agent-selector.js';
 
 export interface InitOptions { yes?: boolean; hook?: boolean }
+
 export async function runInit(context: CliContext, options: InitOptions, prompt: UserPrompter = new TerminalPrompter()): Promise<void> {
+  printBanner(context.output.log);
+
   const detected = detectIntegrations(context.root);
   const previous = await readConfig(context.root);
-  context.output.log(`Workspace: ${context.root}\nGit: ${detected.git ? 'detected' : 'not detected'}\nIDEs: ${detected.ides.join(', ') || 'none'}\nCI: ${detected.ci.join(', ') || 'none'}\nHusky: ${detected.husky ? 'detected' : 'not detected'}`);
-  const defaults = previous?.integrations ?? [...new Set(['cursor' as const, 'claude' as const, ...detected.ides])];
-  const integrations = options.yes ? defaults : await prompt.integrations(defaults);
+
+  printSetupOverview(context.root, detected, context.output.log);
+
+  const defaults = previous?.integrations ?? [...new Set(['universal', 'cursor', 'claude', ...detected.ides])];
+  let integrations: string[];
+
+  if (options.yes) {
+    const summary = formatSelectedSummary(new Set(defaults));
+    context.output.log(`  ${pc.green(pc.bold('Selected:'))} ${pc.green(summary)}\n`);
+    integrations = defaults;
+  } else {
+    integrations = await prompt.integrations(defaults);
+  }
+
   const config: ProjectConfig = {
-    version: 1, integrations,
+    version: 1,
+    integrations,
     hook: options.hook !== false && detected.git && (previous?.hook ?? true),
   };
-  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject ${integrations.join(', ') || 'no IDE'} rules, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
-    context.output.log('Setup cancelled'); return;
+
+  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
+    context.output.log('Setup cancelled');
+    return;
   }
+
   const created = await context.store.initialize(createTestTruth(path.basename(context.root)));
   await installIdeRules(context.root, config.integrations);
   if (config.hook) await installHook(context.root, context.git);
   await saveConfig(context.root, config);
-  context.output.log(pc.green(`TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
+
+  context.output.log(pc.green(`✔ TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
 }

@@ -1,103 +1,181 @@
 # TestWeave
 
-[![CI](https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml)
+<p align="center">
+  <strong>The living manual QA contract engine for software teams and AI coding agents.</strong>
+</p>
 
-TestWeave keeps manual QA definitions alongside source code in `test-truth.md`. It provides a Node.js 20+ CLI, a local MCP server, Git pre-push enforcement, and Jira/Xray/Zephyr exports. Git must be installed for drift checks and hooks.
+<p align="center">
+  <a href="https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml"><img src="https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://www.npmjs.com/package/testweave"><img src="https://img.shields.io/npm/v/testweave.svg" alt="npm version" /></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node.js 20+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/AI%20Agents-79%2B%20Supported-8A2BE2" alt="79+ AI Agents" />
+  <img src="https://img.shields.io/badge/MCP-Native%20Stdio-009688" alt="MCP Server" />
+</p>
 
-## Contributing
+---
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow the [Code of Conduct](CODE_OF_CONDUCT.md), and use the [issue templates](https://github.com/AlexisRellon/TestWeave/issues/new/choose) or [Discussions](https://github.com/AlexisRellon/TestWeave/discussions). See [SECURITY.md](SECURITY.md) for private vulnerability reports, [CHANGELOG.md](CHANGELOG.md) for changes, and [RELEASING.md](RELEASING.md) for the semantic-versioned release process.
+## Overview
 
-## Run from this checkout
+**TestWeave** binds manual QA specifications directly to source code inside your Git repository in `test-truth.md`. It turns static, neglected test documentation into an actively enforced contract that evolves alongside your codebase.
 
-```sh
-git clone https://github.com/AlexisRellon/TestWeave.git
-cd TestWeave
-npm ci
-npm run check
-node dist/cli/index.js --help
-node dist/cli/index.js --cwd /path/to/project init
+- **Zero QA Drift**: Detects whenever source code modifications alter behavior without corresponding manual QA scenario updates.
+- **Git Pre-Push Enforcement**: Blocks stale or uncovered commits before they ever leave a developer's workstation.
+- **79+ AI Coding Agent Support**: Automatically provisions standardized `SKILL.md` agent skills and IDE rules across **23 Universal agents** (`.agents/skills`) and **56 Dedicated agents** (`.claude/skills`, `.windsurf/skills`, etc.).
+- **Native Model Context Protocol (MCP)**: Local stdio MCP server enabling AI agents (Cursor, Claude, Copilot, Antigravity, etc.) to inspect contracts, detect drift, and upsert test cases safely.
+- **Enterprise QA Exports**: One-command export to **Jira**, **Xray**, and **Zephyr Scale** (in both CSV and JSON formats).
+- **Universal Package Manager Support**: Works seamlessly across **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (PnP)**, and **Bun**.
+
+```mermaid
+flowchart LR
+    subgraph Development
+        Dev[Developer / AI Agent] -->|Modifies Code| Code[Source Files]
+        Dev -->|Updates QA Contract| Contract[test-truth.md]
+    end
+
+    subgraph Verification
+        Code --> Drift[TestWeave Drift Engine]
+        Contract --> Drift
+        Drift -->|git push / testweave sync| Gate{Contract Up-to-Date?}
+        Gate -->|Yes| Push[✔ Git Push Allowed]
+        Gate -->|No| Block[✖ Blocked: QA Drift Detected]
+    end
+
+    subgraph Ecosystem
+        Contract <-->|stdio MCP / SKILL.md| Agents[79+ AI Coding Agents]
+        Contract -->|testweave generate| Exports[Jira / Xray / Zephyr]
+    end
 ```
 
-## Package managers
+---
 
-The published package format supports **npm, pnpm, Yarn Classic, modern Yarn (including Plug'n'Play), and Bun**. Install a project dev dependency to keep hooks and IDE integrations attached to a durable installation.
+## Quickstart
 
-Download a versioned tarball from [GitHub Releases](https://github.com/AlexisRellon/TestWeave/releases), or build one with `npm pack`. These commands install that artifact:
+### 1. Initialize TestWeave in your project
 
-| Package manager | Install the tarball in your project | Run the installed CLI |
-| --- | --- | --- |
-| npm | `npm install --save-dev /path/to/testweave-0.1.0.tgz` | `npx --no-install testweave init` |
-| pnpm | `pnpm add --save-dev /path/to/testweave-0.1.0.tgz` | `pnpm exec testweave init` |
-| Yarn Classic / modern | `yarn add --dev testweave@file:/path/to/testweave-0.1.0.tgz` | `yarn run testweave init` |
-| Bun | `bun add --dev /path/to/testweave-0.1.0.tgz` | `bun run testweave init` |
-
-On Windows, quote paths containing spaces and use forward slashes for Yarn file references, for example `yarn add --dev "testweave@file:C:/Downloads/testweave-0.1.0.tgz"`.
-
-For versions available on the [npm registry](https://www.npmjs.com/package/testweave), use `testweave` instead of the tarball reference. Registry-based one-off execution is also supported:
-
-| Package manager | Registry one-off execution |
-| --- | --- |
-| npm | `npx testweave init` |
-| pnpm | `pnpm dlx testweave init` |
-| Yarn 2+ | `yarn dlx testweave init` |
-| Bun | `bunx testweave init` |
-
-Yarn Classic requires installing the package before `yarn run testweave`; it has no `dlx` command. Bun installs and invokes the package while its Node shebang keeps **Node.js 20+** as the runtime. This support does not require forcing execution with `bunx --bun`.
-
-All commands below use npm's runner for illustration. Substitute `pnpm exec testweave`, `yarn run testweave`, or `bun run testweave` for `npx testweave` to use the same commands with your manager. In monorepos, add TestWeave to the workspace from which you run it and select the repository with `--cwd`.
-
-Package-manager references: [pnpm exec](https://pnpm.io/cli/exec), [pnpm dlx](https://pnpm.io/cli/dlx), [Yarn run](https://yarnpkg.com/cli/run), [Yarn dlx](https://yarnpkg.com/cli/dlx), [Bun runners](https://bun.sh/docs/pm/bunx).
+Run the interactive setup in any Git repository:
 
 ```sh
 npx testweave init
-npx testweave init --yes
-npx testweave doctor
-npx testweave doctor --fix
-npx testweave sync
-npx testweave sync --base origin/main --strict
-npx testweave generate --target xray --format csv --output qa.csv
-npx testweave generate --target zephyr --format json --project-key QA --output qa.json
-npx testweave mcp
+# or use the alias:
+npx testweave setup
 ```
 
-Use global `--cwd <directory>` to select a project. Inside a Git repository, TestWeave uses its top-level directory. `generate` writes to stdout unless given `--output`; output files must be new files inside the workspace. Existing files are never overwritten.
+To accept defaults non-interactively (ideal for CI, scripts, or rapid onboarding):
 
-Exit codes: **0** success (including warning-mode drift), **1** blocked drift or failed diagnostics, **2** operational/validation errors. Commander usage errors return **1**.
+```sh
+npx testweave init --yes
+```
 
-## The contract
+This bootstraps:
+1. An authoritative `test-truth.md` QA contract at your workspace root.
+2. The Git `pre-push` hook (or Husky v9 integration).
+3. Configured IDE rules (`.cursorrules`, `CLAUDE.md`, `.windsurfrules`, `.github/instructions/testweave.instructions.md`, `.vscode/mcp.json`).
+4. Custom agent skill definitions (`<skillsDir>/testweave/SKILL.md`) for detected and selected agents.
 
-The authoritative data is exactly one **top-level** fenced block with language `json` and metadata `testweave`. Both backtick and tilde fences are accepted. Prose outside the block is preserved by module upserts.
+### 2. Verify contract alignment
+
+```sh
+npx testweave sync
+```
+
+### 3. Check and repair environment diagnostics
+
+```sh
+npx testweave doctor
+npx testweave doctor --fix
+```
+
+### 4. Export manual test suites
+
+```sh
+npx testweave generate --target xray --format csv --output test-cases.csv
+```
+
+---
+
+## Package Managers
+
+TestWeave supports **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (Plug'n'Play)**, and **Bun**. Installing as a project dev dependency is recommended to keep hooks, scripts, and MCP configurations anchored to a durable version.
+
+| Package Manager | Dev Dependency Installation | Running the Installed CLI | Registry One-Off Execution |
+| :--- | :--- | :--- | :--- |
+| **npm** | `npm install --save-dev testweave` | `npx --no-install testweave init` | `npx testweave init` |
+| **pnpm** | `pnpm add --save-dev testweave` | `pnpm exec testweave init` | `pnpm dlx testweave init` |
+| **Yarn Classic** | `yarn add --dev testweave` | `yarn run testweave init` | *(requires installation)* |
+| **Yarn 2+ / Modern** | `yarn add --dev testweave` | `yarn run testweave init` | `yarn dlx testweave init` |
+| **Bun** | `bun add --dev testweave` | `bun run testweave init` | `bunx testweave init` |
+
+> [!NOTE]
+> Under **Bun**, the CLI's Node shebang keeps **Node.js 20+** as the runtime. For **Yarn Plug'n'Play**, ensure `pnpEnableEsmLoader: true` is set in `.yarnrc.yml` because TestWeave is a pure ESM package. TestWeave automatically generates loaders so Git hooks and VS Code MCP servers resolve dependencies outside a Yarn shell.
+
+### GitHub Packages
+
+TestWeave is also published to the GitHub Packages registry as `@alexisrellon/testweave`.
+
+To install from GitHub Packages, configure `@alexisrellon` registry scoping in your `.npmrc`:
+
+```ini
+@alexisrellon:registry=https://npm.pkg.github.com
+```
+
+Then install as a dev dependency:
+
+```sh
+npm install --save-dev @alexisrellon/testweave
+```
+
+---
+
+## The Living QA Contract (`test-truth.md`)
+
+The authoritative contract is housed in a single top-level fenced code block labeled ````json testweave````. Any prose, Markdown headers, or comments outside this block are preserved during automated updates.
 
 ~~~json testweave
 {
   "schemaVersion": 1,
-  "project": "Example",
+  "project": "AcmeApp",
   "policy": {
     "mode": "block",
-    "sourceGlobs": ["src/**/*.{ts,tsx}"],
-    "ignoreGlobs": ["**/*.d.ts"]
+    "sourceGlobs": ["src/**/*.{ts,tsx,js,jsx}"],
+    "ignoreGlobs": ["**/*.d.ts", "**/*.test.{ts,tsx}"]
   },
   "modules": [
     {
       "id": "authentication",
-      "name": "Authentication",
-      "description": "Registered users sign in and receive clear errors for invalid credentials.",
-      "paths": ["src/auth/**"],
+      "name": "User Authentication",
+      "description": "User login, registration, password reset, and session management.",
+      "paths": ["src/auth/**", "src/middleware/session.ts"],
       "tests": [
         {
           "id": "AUTH-001",
-          "title": "Valid user signs in",
+          "title": "Registered user logs in with valid credentials",
           "priority": "high",
-          "preconditions": ["A registered test account exists"],
+          "preconditions": [
+            "User account exists and email is verified"
+          ],
           "steps": [
             {
-              "action": "Submit the test account credentials",
-              "data": "Use a designated test account; do not record its password here",
-              "expected": "The dashboard opens and displays the signed-in user"
+              "action": "Navigate to /login and submit valid credentials",
+              "data": "Use test fixture account credentials",
+              "expected": "User is redirected to /dashboard with active session cookie"
             }
           ],
-          "tags": ["smoke"]
+          "tags": ["smoke", "auth", "p0"]
+        },
+        {
+          "id": "AUTH-002",
+          "title": "Login fails with invalid credentials",
+          "priority": "medium",
+          "preconditions": [],
+          "steps": [
+            {
+              "action": "Submit invalid password on /login",
+              "data": "user@example.com / wrongpassword",
+              "expected": "Error banner displays 'Invalid credentials'; password field is cleared"
+            }
+          ],
+          "tags": ["auth", "negative"]
         }
       ]
     }
@@ -105,125 +183,302 @@ The authoritative data is exactly one **top-level** fenced block with language `
 }
 ~~~
 
-The exact schema is exported from `src/schema/test-truth.ts`. Objects are strict. Module IDs and test IDs are unique; test IDs are unique across the entire contract. Each module requires positive relative POSIX globs and at least one test with at least one action/expected-result pair. Priorities are `low`, `medium`, `high`, or `critical`. No execution status is inferred.
+### Contract Schema Structure
 
-Initialization creates an empty, valid contract. It does not invent coverage: register modules before pushing source files. Default source globs cover common programming languages, SQL, and shell scripts; generated output and declaration files are ignored. Adjust these globs for your project, including templates, configuration, or other behavior-bearing files as needed.
+- **`schemaVersion`**: Currently `1`.
+- **`project`**: Project display name.
+- **`policy`**:
+  - `mode`: `'block'` (fails check on drift) or `'warn'` (reports drift with exit code 0 unless `--strict` is passed).
+  - `sourceGlobs`: Relative POSIX globs covering behavior-bearing source files.
+  - `ignoreGlobs`: Files exempted from QA tracking (e.g., types, generated bundles).
+- **`modules`**: Functional subsystems.
+  - `id`: Unique module identifier (e.g., `authentication`).
+  - `name`: Human-readable module title.
+  - `description`: Scope of functional behavior covered by this module.
+  - `paths`: Array of POSIX globs mapping files to this module.
+  - `tests`: Array of test definitions.
+    - `id`: Globally unique test ID across the entire contract (e.g., `AUTH-001`).
+    - `title`: Clear test scenario title.
+    - `priority`: `'low'` | `'medium'` | `'high'` | `'critical'`.
+    - `preconditions`: List of prerequisite conditions.
+    - `steps`: Array of manual test steps:
+      - `action`: What the tester or runner executes.
+      - `data`: Inputs, parameters, or test data.
+      - `expected`: The verified observable outcome.
+    - `tags`: Optional searchable labels (e.g., `["smoke", "regression"]`).
 
-## Drift semantics
+---
 
-- `sync` compares the working tree, staged changes, and untracked files against the upstream commit, or an explicit `--base`.
-- Pre-push reads Git's ref-update stream and compares the **committed local SHA being pushed** against the remote SHA. An uncommitted documentation fix cannot make a stale push pass.
-- For a new remote branch, an available upstream is used; without one, an empty tree is the baseline and all source files require module coverage.
-- Deletions are skipped at the ref level. File renames are treated as deletion plus addition so both paths are considered.
-- Every affected module must have changed test content or description. Module renaming, path-only edits, formatting, and test-case reordering do not count. Updating an unrelated module does not clear drift.
-- Both baseline and current source policies are used. A branch cannot hide drift by weakening its own ignore rules or switching an upstream blocking policy to warning mode.
-- Unknown source files are reported. Removing an affected module is reported; retain a retirement scenario documenting removed behavior until the removal is integrated.
-- `warn` mode reports drift with exit 0; `--strict` enforces blocking. Invalid contracts and unavailable revisions are always errors.
-- A missing upstream is actionable, not silently ignored. Use `--base`, configure tracking, or fetch missing remote history. TestWeave does not fetch automatically.
+## Drift Semantics & Git Enforcement
 
-Detection is conservative and file-based: it does not prove that code logic changed, that QA steps are sufficient, or that tests were executed. Cosmetic changes to a monitored source file may require a documentation update. Git hooks can be bypassed, so use CI for shared enforcement.
+TestWeave enforces manual QA synchronization with strict, conservative rules:
 
-## Integrations and doctor
+1. **Working Tree vs. Upstream (`testweave sync`)**:
+   - Compares the working tree, staged changes, and untracked files against the upstream tracking branch or an explicit `--base <ref>`.
+2. **Pre-Push Enforcer (`.git/hooks/pre-push`)**:
+   - Intercepts Git's ref-update stream and inspects the **committed local SHA being pushed** against the remote SHA.
+   - An uncommitted or dirty `test-truth.md` cannot make a stale committed push pass.
+3. **Module Coverage Requirements**:
+   - Every modified source file matching `sourceGlobs` must map to at least one registered module.
+   - Every affected module must have substantive test modifications (updated steps, actions, expectations, or descriptions). Reordering test cases, touching paths only, or renaming modules does not clear drift.
+4. **Anti-Evasion Policy**:
+   - Evaluates both baseline and proposed policies: a branch cannot bypass drift checks by weakening its ignore globs or changing `mode: "block"` to `mode: "warn"`.
+5. **Exit Codes**:
+   - `0`: Success (or warning-mode drift).
+   - `1`: Blocked drift, failed diagnostics, or CLI usage error.
+   - `2`: Schema validation or operational error.
 
-`init` detects Git, Cursor, Claude, VS Code, Husky, and common CI files with `existsSync`, displays them, and prompts for integrations and confirmation. `--yes` chooses Cursor and Claude plus detected IDEs; `--no-hook` skips the hook. Selections are stored in `.testweave.json`.
+---
 
-Cursor and Claude rules live in managed blocks in `.cursorrules` and `CLAUDE.md`. VS Code receives auto-discovered `.github/instructions/testweave.instructions.md` and a `testweave` stdio entry in `.vscode/mcp.json`. Existing JSONC comments and unrelated servers are preserved.
+## 79+ AI Coding Agent Ecosystem
 
-The default hook is `.git/hooks/pre-push`, installed with mode 0755. Git's configured hook directory and worktrees are respected. For Husky v9's `.husky/_` dispatcher, TestWeave installs `.husky/pre-push`. Existing hooks are preserved as `pre-push.testweave-original`; both hooks receive the same stdin and arguments. A failing original hook still blocks the push.
+TestWeave includes deep support for modern AI agents and IDEs. During initialization (`testweave setup` or `testweave init`), an interactive selector allows choosing from **79 supported agents**.
 
-Hooks and VS Code MCP entries reference the current Node executable and installed CLI path, so normal Git and IDE execution does not call a package manager. When initialized under Yarn Plug'n'Play, they also include the active PnP dependency loader and its ESM loader, allowing Git and VS Code to start TestWeave outside a Yarn shell. Yarn PnP projects must have ESM loader support enabled (`pnpEnableEsmLoader: true` in `.yarnrc.yml`) because TestWeave is an ESM package. See [Yarn PnP](https://yarnpkg.com/features/pnp) and [loader settings](https://yarnpkg.com/configuration/yarnrc/).
+```
+  ████████╗███████╗███████╗████████╗██╗    ██╗███████╗ █████╗ ██╗   ██╗███████╗
+  ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██║    ██║██╔════╝██╔══██╗██║   ██║██╔════╝
+     ██║   █████╗  ███████╗   ██║   ██║ █╗ ██║█████╗  ███████║██║   ██║█████╗  
+     ██║   ██╔══╝  ╚════██║   ██║   ██║███╗██║██╔══╝  ██╔══██║╚██╗ ██╔╝██╔══╝  
+     ██║   ███████╗███████║   ██║   ╚███╔███╔╝███████╗██║  ██║ ╚████╔╝ ███████╗
+     ╚═╝   ╚══════╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝
+   testweave 
+```
 
-Prefer a project dev dependency for a durable installation. After moving the repository, changing Node installations, switching package-manager layouts, or clearing a one-off execution cache, rerun `init --yes` or `doctor --fix` using your selected manager.
+### Universal Agent Standard (`.agents/skills`)
+TestWeave deploys a standardized agent skill (`.agents/skills/testweave/SKILL.md`) that works out of the box across **23 Universal Agents**:
 
-`doctor` checks contract validation, selected rule content, hook integrity, and executable bits on POSIX. Windows does not represent POSIX execution bits, so hook integrity is checked there. It offers repair in a terminal; `--fix` repairs without prompting. Missing contracts can be bootstrapped, but invalid contracts and malformed managed markers are preserved for manual repair.
+| Universal Agents (`.agents/skills`) | | |
+| :--- | :--- | :--- |
+| • Antigravity & Antigravity CLI | • Amp | • Cline |
+| • Codex | • Cursor | • Deep Agents |
+| • Dexto | • Droid | • Firebender |
+| • fx | • Gemini CLI | • GitHub Copilot |
+| • Kilo Code | • Kimi Code CLI | • Loaf |
+| • OpenCode | • Pi | • Replit |
+| • Sarvam Code | • Warp | • Zed |
+| • PromptScript | | |
 
-## MCP
+### Dedicated Agent Integrations
+For agents and IDEs requiring specific configuration files or custom skills directories, TestWeave automatically provisions target-specific rules and skills:
 
-`testweave mcp` uses stdio; stdout contains only MCP protocol messages. A typical MCP client configuration is:
+- **Claude Code**: Rules in `CLAUDE.md`, skill in `.claude/skills/testweave/SKILL.md`
+- **Windsurf**: Rules in `.windsurfrules`, skill in `.windsurf/skills/testweave/SKILL.md`
+- **VS Code**: Auto-discovered instructions in `.github/instructions/testweave.instructions.md`, MCP entry in `.vscode/mcp.json`
+- **Devin for Terminal**: `.devin/skills/testweave/SKILL.md`
+- **OpenHands**: `.openhands/skills/testweave/SKILL.md`
+- **AiderDesk**: `.aider-desk/skills/testweave/SKILL.md`
+- **Continue, Goose, Grok, Trae, Roo Code, Tabnine CLI, and 45+ more**.
 
+### Managed Rule Markers
+IDE rules are safely embedded using non-destructive markers:
+```markdown
+<!-- testweave:start -->
+## TestWeave QA contract
+- Read test-truth.md before changing source behavior.
+- Every changed source file must match a registered module's paths.
+- Update that module's manual test actions and expected results alongside code changes.
+...
+<!-- testweave:end -->
+```
+Any pre-existing user instructions outside these markers are preserved intact.
+
+---
+
+## Model Context Protocol (MCP) Server
+
+TestWeave includes a built-in stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server. AI assistants can directly interact with your living QA contract.
+
+Start the server manually or through your MCP client:
+```sh
+npx --no-install testweave mcp
+```
+
+### MCP Client Configurations
+
+#### Cursor (`.cursor/mcp.json`)
 ```json
 {
   "mcpServers": {
     "testweave": {
       "command": "npx",
-      "args": ["--no-install", "testweave", "--cwd", "/absolute/project/path", "mcp"]
+      "args": ["--no-install", "testweave", "--cwd", "/absolute/path/to/project", "mcp"]
     }
   }
 }
 ```
 
-For other package managers, replace `command` and the initial `args` as follows, then append `["--cwd", "/absolute/project/path", "mcp"]`:
-
-| Manager | `command` | Initial `args` |
-| --- | --- | --- |
-| npm | `npx` | `["--no-install", "testweave"]` |
-| pnpm | `pnpm` | `["exec", "testweave"]` |
-| Yarn | `yarn` | `["run", "testweave"]` |
-| Bun | `bun` | `["run", "testweave"]` |
-
-Set the MCP client's working directory to the project containing the installed dependency when using these runner configurations. TestWeave's `--cwd` selects the analyzed repository; it does not change where a package manager resolves the binary.
-
-VS Code uses a `servers` object instead; its entry is generated by `init` and works without a package-manager process, including Yarn PnP. The resource URI is generated with `pathToFileURL`, including proper Windows drive letters and URL escaping.
-
-| Capability | Behavior |
-| --- | --- |
-| Living contract resource | `file:///<workspace>/test-truth.md`, MIME `text/markdown` |
-| `analyze_code_drift` | Optional `base` and `strict`; returns the drift report |
-| `upsert_test_module` | Requires a complete `module`; validates and creates/replaces by ID |
-| `generate_qa_export` | `target`, `format`, optional `projectKey`; returns export contents |
-
-MCP cannot choose arbitrary file destinations or invoke AI APIs. Upserts are serialized with an exclusive lock, revalidate the full contract, and use atomic replacement. A crashed writer may leave `test-truth.md.lock`; remove it only after confirming no writer is active.
-
-## Export profiles
-
-| Target | CSV | JSON |
-| --- | --- | --- |
-| Jira | Issue rows, manual steps in Description | Jira external-system import `projects[].issues[]` |
-| Xray | Test Case Importer rows grouped by Test Case Identifier | Manual test import objects with `fields` and `steps` |
-| Zephyr Scale | Step-by-step CSV; blank metadata on continuation rows | TestWeave REST bundle containing separate case and step request bodies |
-
-JSON needs a destination project key. Zephyr JSON is a request bundle for an integration to consume, not a single native bulk-import payload: create each case, then send its `testSteps` body to the resulting case key. TestWeave only writes artifacts; it does not contact Jira, Xray, or Zephyr.
-
-Configure CSV field mappings in your destination importer. Issue types, priority names, required custom fields, and import availability vary by product edition and project. These exports describe test definitions, not execution results. CSV quotes commas, quotes, and line breaks and prefixes formula-like cells with an apostrophe for spreadsheet safety.
-
-## Optional AI drafting
-
-```sh
-npx testweave generate --provider openai --model YOUR_MODEL --context qa-context.md --output auth-draft.json
-npx testweave generate --provider anthropic --model YOUR_MODEL --context qa-context.md --module authentication --output auth-draft.json
+#### Claude Desktop / Claude Code (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "testweave": {
+      "command": "npx",
+      "args": ["--no-install", "testweave", "--cwd", "/absolute/path/to/project", "mcp"]
+    }
+  }
+}
 ```
 
-Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in your environment. An explicit provider, model, and context file are required. The supplied context file and optional existing module are sent to that provider; no repository-wide upload happens. OpenAI uses structured Responses output; Anthropic uses a forced structured tool response. Both results pass Zod validation, with bounded request timeouts and retries.
+#### VS Code (`.vscode/mcp.json`)
+Configured automatically during `init`. Uses a direct `node` invocation with native path escaping:
+```json
+{
+  "servers": {
+    "testweave": {
+      "command": "node",
+      "args": ["/path/to/testweave/dist/cli/index.js", "--cwd", "/absolute/path/to/project", "mcp"]
+    }
+  }
+}
+```
 
-Review the draft, then apply it through `upsert_test_module` or edit the contract. Drafting never silently updates the contract or claims tests were run.
+### MCP Capabilities & Tools
 
-## CI and development
+| Capability / Tool | Type | Description |
+| :--- | :--- | :--- |
+| `living-test-contract` | Resource | Living `test-truth.md` contract resource (`file:///<root>/test-truth.md`, MIME `text/markdown`). |
+| `analyze_code_drift` | Tool | Compares working files against upstream or `--base`. Returns a full JSON drift report. |
+| `upsert_test_module` | Tool | Safely creates or updates a module in `test-truth.md`. Uses atomic file locking (`test-truth.md.lock`) and validates the full schema before writing. |
+| `generate_qa_export` | Tool | Returns test definitions formatted for Jira, Xray, or Zephyr without modifying disk. |
 
-A GitHub Actions example for a consuming project, after installing TestWeave as a dev dependency:
+---
+
+## Enterprise QA Exporters
+
+Generate ready-to-import test artifacts for external test management tools:
+
+```sh
+# Export for Xray (CSV)
+npx testweave generate --target xray --format csv --output xray-tests.csv
+
+# Export for Zephyr Scale (JSON bundle with project key)
+npx testweave generate --target zephyr --format json --project-key PROJ --output zephyr-bundle.json
+
+# Export for Jira (CSV)
+npx testweave generate --target jira --format csv --output jira-issues.csv
+```
+
+### Export Formats & Profiles
+
+| Target | CSV Format | JSON Format |
+| :--- | :--- | :--- |
+| **Jira** | Standard Jira CSV issue rows; manual test steps formatted inside the Description field. | Jira external-system import schema (`projects[].issues[]`). |
+| **Xray** | Compatible with Xray Test Case Importer; steps grouped by Test Case Identifier. | Xray manual test import payload with structured `fields` and `steps`. |
+| **Zephyr Scale** | Step-by-step CSV format with blank metadata on continuation rows. | REST bundle containing individual case payloads and step definitions. |
+
+> [!TIP]
+> **Spreadsheet Safety**: TestWeave's CSV serializer automatically prefixes formula-triggering characters (`=`, `+`, `-`, `@`) with an apostrophe and properly quotes multi-line text and embedded quotes.
+
+---
+
+## AI Test Drafting (Optional)
+
+Draft new QA modules or test cases directly from technical specs using OpenAI or Anthropic:
+
+```sh
+# Using OpenAI (requires OPENAI_API_KEY)
+npx testweave generate --provider openai --model gpt-4o --context specs/payment.md --output drafts/payment.json
+
+# Using Anthropic (requires ANTHROPIC_API_KEY)
+npx testweave generate --provider anthropic --model claude-3-5-sonnet-20241022 --context specs/auth.md --module authentication --output drafts/auth.json
+```
+
+- **OpenAI**: Enforces the contract schema via Structured Outputs.
+- **Anthropic**: Enforces the contract schema via tool schema constraints.
+- Generated modules are validated with Zod before output. Drafting never silently alters `test-truth.md`—you review and apply drafts explicitly.
+
+---
+
+## CLI Command Reference
+
+```
+Usage: testweave [options] [command]
+
+Options:
+  --cwd <directory>    Target project directory (default: current working directory or Git root)
+  -h, --help           Display help for command
+  -v, --version        Output current version
+
+Commands:
+  init, setup [options]
+    -y, --yes          Accept default/detected integrations non-interactively
+    --no-hook          Skip installing Git pre-push hook
+
+  sync [options]
+    --base <ref>       Git revision baseline to compare against (default: upstream tracking branch)
+    --strict           Force blocking mode (exit code 1) even if policy is set to "warn"
+    --json             Output drift report as machine-readable JSON
+
+  doctor [options]
+    --fix              Automatically repair missing hooks, broken rules, or unformatted configs
+
+  generate [options]
+    --target <target>  Target QA platform: "jira", "xray", or "zephyr"
+    --format <format>  Output format: "csv" or "json"
+    --output <file>    Destination file (must be a new file inside the workspace)
+    --project-key <k>  Destination project key (required for JSON exports)
+    --provider <prov>  AI drafting provider: "openai" or "anthropic"
+    --model <model>    AI model identifier
+    --context <file>   Context Markdown file for AI drafting
+    --module <id>      Target module ID for AI refinement
+
+  mcp
+    Starts the stdio Model Context Protocol (MCP) server
+```
+
+---
+
+## CI / CD Integration
+
+Enforce QA contract compliance in your pull request pipelines:
+
+### GitHub Actions (`.github/workflows/qa-drift.yml`)
 
 ```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-- uses: actions/setup-node@v4
-  with:
-    node-version: 20
-    cache: npm
-- run: npm ci
-- run: npx --no-install testweave sync --base origin/main --strict
+name: QA Contract Check
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  testweave-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed for base ref comparison
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Verify Zero QA Drift
+        run: npx --no-install testweave sync --base origin/${{ github.base_ref }} --strict
 ```
 
-Use the actual PR target branch instead of `origin/main` when applicable. Do not run the baseline comparison against the same SHA as the checked revision.
+*(For `pnpm`, `yarn`, or `bun`, substitute `pnpm exec testweave sync ...`, `yarn run testweave sync ...`, or `bun run testweave sync ...`)*
 
-For pnpm, use `pnpm install --frozen-lockfile` and `pnpm exec testweave sync --base origin/main --strict`. For modern Yarn, use `yarn install --immutable` and `yarn run testweave sync --base origin/main --strict` (Yarn Classic uses `--frozen-lockfile`). For Bun, use `bun install --frozen-lockfile` and `bun run testweave sync --base origin/main --strict`. Configure CI with your package manager's lockfile and cache.
+---
 
-`npm run check`, `pnpm run check`, `yarn run check`, and `bun run check` run strict TypeScript checks, build the CLI, and run contract, exporter, AI validation, Git, hook, CLI, and MCP tests. Temporary Git repositories and local bare remotes isolate integration tests. Real AI requests and vendor imports are not part of the automated suite.
-
-Package-manager installation checks use the real tarball and validate local execution, doctor, generated MCP launchers, and Git push enforcement under npm, pnpm, Yarn Classic, Yarn PnP, and Bun. CI runs these on Windows and Linux. To reproduce locally:
+## Contributing & Development
 
 ```sh
-npm install --prefix .manager-tools --no-save pnpm@10 yarn@1 @yarnpkg/cli-dist@4 bun@1 --no-audit --no-fund
-npm pack
+# Clone and install dependencies
+git clone https://github.com/AlexisRellon/TestWeave.git
+cd TestWeave
+npm ci
+
+# Run TypeScript checks, builds, and test suite
+npm run check
+
+# Run tests across package managers (npm, pnpm, yarn, bun)
 npm run check:manager -- npm
 npm run check:manager -- pnpm
 npm run check:manager -- yarn-classic
@@ -231,8 +486,17 @@ npm run check:manager -- yarn-pnp
 npm run check:manager -- bun
 ```
 
-The npm-based tool bootstrap above is only for this repository's verification fixtures; consumers can install and run TestWeave using their chosen manager.
+Contributions are welcome! Please consult [CONTRIBUTING.md](CONTRIBUTING.md), adhere to our [Code of Conduct](CODE_OF_CONDUCT.md), and follow [SECURITY.md](SECURITY.md) for vulnerability reports.
 
-The four layers are `src/cli` + `src/mcp`, `src/engine`, `src/llm`, and `src/integrations`. Public interfaces, schemas, and library entry points are exported from `src/index.ts`. `IMPLEMENTATION.md` contains the implementation in file-named Markdown code blocks.
+### Architecture
+- **`src/cli` & `src/mcp`**: CLI commands, interactive TTY UI, banner, agent selector, and stdio MCP server.
+- **`src/engine`**: Contract store, atomic file writer, Git diff analyzer, and doctor diagnostics.
+- **`src/integrations`**: Agent definitions (79+ agents), skills installer, IDE rule injectors, Git hooks, and Jira/Xray/Zephyr exporters.
+- **`src/schema`**: Authoritative Zod schemas for contracts, modules, and policies.
+- **`src/llm`**: Structured output adapters for OpenAI and Anthropic.
 
-API references: [MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/server), [OpenAI structured outputs](https://github.com/openai/openai-node/blob/main/docs/structured-outputs.md), [Anthropic tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use), [VS Code instruction locations](https://code.visualstudio.com/docs/agent-customization/custom-instructions), [Xray Test Case Importer](https://docs.getxray.app/display/XRAYCLOUD/Importing+Tests+using+Test+Case+Importer), [Zephyr Scale API](https://support.smartbear.com/zephyr-scale-cloud/api-docs/).
+---
+
+## License
+
+[MIT](LICENSE) © Alexis Rellon
