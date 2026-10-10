@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,3 +71,25 @@ jobs:
             "$RUNNER_TEMP/testweave-"*.tgz "$RUNNER_TEMP/SHA256SUMS" \
             --verify-tag --title "TestWeave $RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gpr"
+          tar -xzf "$RUNNER_TEMP/testweave-"*.tgz -C "$RUNNER_TEMP/gpr"
+          node -e '
+            const fs = require("node:fs");
+            const pkgPath = "'"$RUNNER_TEMP"'/gpr/package/package.json";
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            pkg.name = "@alexisrellon/testweave";
+            pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
+            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+          '
+          cd "$RUNNER_TEMP/gpr/package"
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
+          publish_args=(--access public --registry=https://npm.pkg.github.com)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            publish_args+=(--tag next)
+          fi
+          npm publish "${publish_args[@]}"

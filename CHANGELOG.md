@@ -4,6 +4,21 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-10
+
+### Added
+
+- Support for 79+ AI coding agent integrations across 23 universal and 56 dedicated environments.
+- Interactive terminal multi-selector with fuzzy search, pagination, and real-time filtering.
+- Retro ASCII banner and workspace setup overview for `testweave init` and new `setup` alias.
+- Bundled `skills/testweave/SKILL.md` custom agent skill and automated injection.
+- Automated GitHub Packages release pipeline publishing `@alexisrellon/testweave`.
+- Non-interactive `--yes` flag to streamline automated and CI initialization.
+
+### Changed
+
+- Enhanced documentation with architecture diagrams, quickstart workflows, and MCP details.
+
 ## [0.1.0] - 2026-10-10
 
 ### Added

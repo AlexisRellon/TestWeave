@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "integrations": [
+    "claude",
+    "vscode"
+  ],
+  "hook": true
+}

@@ -39,7 +39,8 @@ const entry = manager === 'bun' ? bunExecutable : nodeEntries[manager];
 if (!entry || !existsSync(entry)) throw new Error('Install verification tools first; run this script through npm run check:manager');
 const binary = manager === 'bun' ? entry : process.execPath;
 const prefix = manager === 'bun' ? [] : [entry];
-const tarball = path.join(repository, 'testweave-0.1.0.tgz');
+const packageJson = JSON.parse(await readFile(path.join(repository, 'package.json'), 'utf8'));
+const tarball = path.join(repository, `testweave-${packageJson.version}.tgz`);
 if (!existsSync(tarball)) throw new Error('Run npm pack before checking package managers');
 const directory = await mkdtemp(path.join(tmpdir(), 'testweave-manager-'));
 const root = path.join(directory, 'project with spaces');
@@ -79,7 +80,7 @@ try {
   }[manager];
   await pm(install);
   const version = await cli(['--version']);
-  assert.match(version.stdout, /0\.1\.0/);
+  assert.match(version.stdout, new RegExp(packageJson.version));
   await run('git', ['init', '-b', 'main']);
   await run('git', ['config', 'user.name', 'TestWeave install tests']);
   await run('git', ['config', 'user.email', 'testweave@example.invalid']);

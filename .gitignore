@@ -7,3 +7,4 @@ coverage/
 *.tgz
 .testweave-exports/
 .manager-tools/
+.vscode/

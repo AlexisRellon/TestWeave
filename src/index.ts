@@ -6,6 +6,8 @@ export * from './engine/git.js';
 export * from './engine/drift.js';
 export * from './engine/doctor.js';
 export * from './integrations/config.js';
+export * from './integrations/agents.js';
+export * from './integrations/skills.js';
 export * from './integrations/ide.js';
 export * from './integrations/vscode.js';
 export * from './integrations/runtime.js';
