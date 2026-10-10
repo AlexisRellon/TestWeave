@@ -28,7 +28,7 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   for (const integration of expected.integrations) {
     try {
       const ok = await hasIdeRules(deps.root, integration);
-      diagnostics.push({ id: `ide:${integration}`, ok, repairable: !ok, message: `${integration} QA rules ${ok ? 'intact' : 'missing or modified'}` });
+      diagnostics.push({ id: `ide:${integration}`, ok, repairable: !ok, message: `${integration} QA integration ${ok ? 'intact' : 'missing or modified'}` });
     } catch (error) { diagnostics.push({ id: `ide:${integration}`, ok: false, repairable: false, message: errorMessage(error) }); }
   }
   if (expected.hook) {

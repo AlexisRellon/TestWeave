@@ -72,6 +72,7 @@ This bootstraps:
 2. The Git `pre-push` hook (or Husky v9 integration).
 3. Configured IDE rules (`.cursorrules`, `CLAUDE.md`, `.windsurfrules`, `.github/instructions/testweave.instructions.md`, `.vscode/mcp.json`).
 4. Custom agent skill definitions (`<skillsDir>/testweave/SKILL.md`) for detected and selected agents.
+5. Project MCP configuration for selected Cursor (`.cursor/mcp.json`), Claude Code (`.mcp.json`), and VS Code (`.vscode/mcp.json`) clients. Existing servers and JSONC comments are preserved; invalid configurations are reported without overwriting them.
 
 ### 2. Update agent skills, IDE rules, and hooks
 
@@ -88,6 +89,7 @@ This synchronizes:
 2. Injected IDE rules (`<!-- testweave:start --> ... <!-- testweave:end -->`).
 3. Git pre-push hooks and workspace `.testweave.json`.
 4. Re-validates the authoritative `test-truth.md` contract.
+5. Refreshes MCP launch paths for selected clients. `testweave doctor --fix` also repairs missing or outdated MCP entries.
 
 ### 3. Verify contract alignment
 
@@ -126,6 +128,45 @@ TestWeave supports **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (Plug'n'Pl
 > Under **Bun**, the CLI's Node shebang keeps **Node.js 20+** as the runtime. For **Yarn Plug'n'Play**, ensure `pnpEnableEsmLoader: true` is set in `.yarnrc.yml` because TestWeave is a pure ESM package. TestWeave automatically generates loaders so Git hooks and VS Code MCP servers resolve dependencies outside a Yarn shell.
 >
 > To update skills and rules in an existing project at any time, run `npx testweave update` (or `pnpm exec testweave update`, `bun run testweave update`).
+
+### Universal shell installer
+
+From your project directory, install globally through npm and automatically run `setup --yes`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AlexisRellon/TestWeave/main/scripts/install.sh | sh
+```
+
+Requires Node.js 20+ and npm. You can also run the script from a checkout:
+
+```sh
+sh scripts/install.sh --cwd "/path/to/project"
+sh scripts/install.sh --method brew --cwd "/path/to/project"
+```
+
+The Homebrew method requires Homebrew and uses this repository's HEAD formula. Pass `--formula owner/tap/testweave` to use another already tapped formula, or `--no-setup` to install without configuring a project. The hosted commands become available once these files are published to `main`.
+
+### Global npm installation
+
+```sh
+npm install --global testweave
+testweave setup --yes
+```
+
+Run setup in each project. MCP configuration is injected during setup, using the installed CLI and Node executable.
+
+### Homebrew
+
+Use the repository as an explicit Homebrew tap:
+
+```sh
+brew tap alexisrellon/testweave https://github.com/AlexisRellon/TestWeave
+brew install --HEAD alexisrellon/testweave/testweave
+cd /path/to/project
+testweave setup --yes
+```
+
+The formula builds from `main`; this is a HEAD installation through the repository tap, with no bottled release. The shell installer's `--method brew` option combines installation and project setup.
 
 ### GitHub Packages
 
@@ -313,6 +354,8 @@ npx --no-install testweave mcp
 
 ### MCP Client Configurations
 
+Setup, init, and update automatically merge the `testweave` server for selected Cursor, Claude Code, and VS Code integrations. Generated entries use absolute Node and installed CLI paths with `--cwd` bound to the project, retaining Yarn PnP loaders when needed. The examples below are alternatives for manual configuration. Other agents receive skills but require their own MCP client configuration.
+
 #### Cursor (`.cursor/mcp.json`)
 ```json
 {
@@ -325,7 +368,9 @@ npx --no-install testweave mcp
 }
 ```
 
-#### Claude Desktop / Claude Code (`claude_desktop_config.json`)
+#### Claude Code (`.mcp.json`)
+
+Configured automatically during setup when Claude Code is selected. Claude Desktop uses its separate `claude_desktop_config.json`, which can be configured manually.
 ```json
 {
   "mcpServers": {

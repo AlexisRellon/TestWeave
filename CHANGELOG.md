@@ -4,6 +4,22 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
+### Added
+
+- Functional test taxonomy in test contracts with 12 explicit test types (`unit`, `integration`, `system`, `sanity`, `smoke`, `regression`, `uat`, `ui`, `api`, `interface`, `component`, `e2e`), synonym normalization, and vendor export mapping.
+- Comprehensive `reference.md` QA reference documentation bundled and installed alongside `SKILL.md` for AI agent environments.
+- Universal shell installer script (`scripts/install.sh`) supporting global npm and Homebrew installations with automated setup.
+- Homebrew formula (`Formula/testweave.rb`) for HEAD tap installations.
+- Automated MCP server configuration for Cursor (`.cursor/mcp.json`), Claude Code (`.mcp.json`), and VS Code (`.vscode/mcp.json`) in `init`, `setup`, and `update`.
+
+### Changed
+
+- Refactored IDE MCP integration to centralized `mcp.ts` module with robust JSONC comment preservation and validation.
+- Enhanced QA prompt authoring to enforce functional test classification.
+- Updated documentation with shell installer, Homebrew instructions, and MCP client details.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { testTruthSchema, type TestCase, type TestTruth } from '../schema/test-truth.js';
+import { testTruthSchema, TEST_TYPE_LABELS, type TestCase, type TestTruth } from '../schema/test-truth.js';
 
 export const exportOptionsSchema = z.strictObject({
   target: z.enum(['jira', 'xray', 'zephyr']).default('xray'),
@@ -16,6 +16,7 @@ export function csvCell(value: string): string {
 }
 function csv(rows: string[][]): string { return rows.map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n'; }
 function priority(test: TestCase): string { return test.priority.charAt(0).toUpperCase() + test.priority.slice(1); }
+function testType(test: TestCase): string { return TEST_TYPE_LABELS[test.type] ?? test.type; }
 function description(moduleDescription: string, test: TestCase): string {
   return moduleDescription + '\n\nPreconditions:\n' + test.preconditions.join('\n') + '\n\n' +
     test.steps.map((step, index) => `${index + 1}. ${step.action}\nData: ${step.data}\nExpected: ${step.expected}`).join('\n\n');
@@ -24,11 +25,11 @@ function exportCsv(contract: TestTruth, options: ExportOptions): string {
   const rows = contract.modules.flatMap((module) => module.tests.map((test) => ({ module, test })));
   if (options.target === 'jira') return csv([
     ['External ID', 'Summary', 'Issue Type', 'Description', 'Priority', 'Labels'],
-    ...rows.map(({ module, test }) => [test.id, test.title, 'Test', description(module.description, test), priority(test), test.tags.join(' ')]),
+    ...rows.map(({ module, test }) => [test.id, test.title, 'Test', description(module.description, test), priority(test), [...test.tags, test.type].join(' ')]),
   ]);
   if (options.target === 'xray') return csv([
     ['Test Case Identifier', 'Summary', 'Test Type', 'Description', 'Priority', 'Action', 'Data', 'Expected Result'],
-    ...rows.flatMap(({ module, test }) => test.steps.map((step) => [test.id, test.title, 'Manual',
+    ...rows.flatMap(({ module, test }) => test.steps.map((step) => [test.id, test.title, testType(test),
       module.description + '\nPreconditions:\n' + test.preconditions.join('\n'), priority(test), step.action, step.data, step.expected])),
   ]);
   return csv([
@@ -37,7 +38,7 @@ function exportCsv(contract: TestTruth, options: ExportOptions): string {
     ...rows.flatMap(({ module, test }) => test.steps.map((step, index) => [
       index === 0 ? `[${test.id}] ${test.title}` : '', index === 0 ? module.description : '',
       index === 0 ? test.preconditions.join('\n') : '', index === 0 ? priority(test) : '',
-      index === 0 ? module.name : '', index === 0 ? test.tags.join(',') : '', step.action, step.data, step.expected,
+      index === 0 ? module.name : '', index === 0 ? [...test.tags, test.type].join(',') : '', step.action, step.data, step.expected,
     ])),
   ]);
 }
@@ -46,12 +47,12 @@ function exportJson(contract: TestTruth, options: ExportOptions): unknown {
   const rows = contract.modules.flatMap((module) => module.tests.map((test) => ({ module, test })));
   if (options.target === 'jira') return { projects: [{ key: options.projectKey, issues: rows.map(({ module, test }) => ({
     externalId: test.id, summary: test.title, issueType: 'Test', description: description(module.description, test),
-    priority: priority(test), labels: test.tags,
+    priority: priority(test), labels: [...test.tags, test.type],
   })) }] };
   if (options.target === 'xray') return rows.map(({ module, test }) => ({
-    testtype: 'Manual', fields: {
+    testtype: testType(test), fields: {
       project: { key: options.projectKey }, summary: `[${test.id}] ${test.title}`,
-      description: module.description + '\nPreconditions:\n' + test.preconditions.join('\n'), labels: test.tags,
+      description: module.description + '\nPreconditions:\n' + test.preconditions.join('\n'), labels: [...test.tags, test.type],
       priority: { name: priority(test) },
     },
     steps: test.steps.map((step) => ({ action: step.action, data: step.data, result: step.expected })),
