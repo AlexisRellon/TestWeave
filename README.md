@@ -23,7 +23,7 @@ node dist/cli/index.js --cwd /path/to/project init
 
 The published package format supports **npm, pnpm, Yarn Classic, modern Yarn (including Plug'n'Play), and Bun**. Install a project dev dependency to keep hooks and IDE integrations attached to a durable installation.
 
-This repository has not been published to npm. Use the provided tarball or build one with `npm pack`; these commands install that local artifact:
+Download a versioned tarball from [GitHub Releases](https://github.com/AlexisRellon/TestWeave/releases), or build one with `npm pack`. These commands install that artifact:
 
 | Package manager | Install the tarball in your project | Run the installed CLI |
 | --- | --- | --- |
@@ -34,9 +34,9 @@ This repository has not been published to npm. Use the provided tarball or build
 
 On Windows, quote paths containing spaces and use forward slashes for Yarn file references, for example `yarn add --dev "testweave@file:C:/Downloads/testweave-0.1.0.tgz"`.
 
-Once the package is published, use the package name `testweave` instead of the tarball reference. Registry-based one-off execution is also supported:
+For versions available on the [npm registry](https://www.npmjs.com/package/testweave), use `testweave` instead of the tarball reference. Registry-based one-off execution is also supported:
 
-| Package manager | One-off execution after publication |
+| Package manager | Registry one-off execution |
 | --- | --- |
 | npm | `npx testweave init` |
 | pnpm | `pnpm dlx testweave init` |

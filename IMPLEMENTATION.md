@@ -41,6 +41,8 @@ Generated from the working files with `npm run bundle:source`.
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
@@ -53,7 +55,7 @@ Generated from the working files with `npm run bundle:source`.
     "prepack": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.78.0",
+    "@anthropic-ai/sdk": "0.131.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "commander": "13.1.0",
     "jsonc-parser": "3.3.1",
@@ -64,7 +66,7 @@ Generated from the working files with `npm run bundle:source`.
     "remark-parse": "11.0.0",
     "simple-git": "4.0.2",
     "unified": "11.0.5",
-    "zod": "4.3.6"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
@@ -1613,6 +1615,80 @@ test('compiled CLI initializes, diagnoses, exports and reports invalid options',
 });
 ````
 
+````tests/llm-sdk.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
+import { z } from 'zod';
+import { AnthropicGenerator } from '../src/llm/anthropic.js';
+import { OpenAiGenerator } from '../src/llm/openai.js';
+import { moduleFixture } from './helpers.js';
+
+test('Anthropic SDK sends the forced tool schema and returns the structured module', async () => {
+  const client = new Anthropic({
+    apiKey: 'test-key', maxRetries: 0,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      assert.equal(new URL(request.url).pathname, '/v1/messages');
+      const body = z.object({
+        model: z.string(),
+        tool_choice: z.object({ type: z.literal('tool'), name: z.string(), disable_parallel_tool_use: z.boolean() }),
+        tools: z.array(z.object({ name: z.string(), input_schema: z.object({ type: z.literal('object') }) })),
+      }).parse(await request.json());
+      assert.equal(body.model, 'test-model');
+      assert.deepEqual(body.tool_choice, { type: 'tool', name: 'author_test_module', disable_parallel_tool_use: true });
+      assert.equal(body.tools[0]?.name, 'author_test_module');
+      return Response.json({
+        id: 'msg_test', type: 'message', role: 'assistant', model: 'test-model',
+        stop_reason: 'tool_use', stop_sequence: null,
+        content: [{ type: 'tool_use', id: 'tool_test', name: 'author_test_module', input: moduleFixture }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    },
+  });
+  assert.deepEqual(await new AnthropicGenerator(client, 'test-model').generate('System', 'Input'), moduleFixture);
+});
+
+test('Anthropic adapter rejects truncated SDK responses', async () => {
+  const client = new Anthropic({
+    apiKey: 'test-key', maxRetries: 0,
+    fetch: async () => Response.json({ stop_reason: 'max_tokens', content: [] }),
+  });
+  await assert.rejects(new AnthropicGenerator(client, 'test-model').generate('System', 'Input'), /complete structured module/);
+});
+
+test('OpenAI SDK and current Zod serialize and parse strict structured output together', async () => {
+  const client = new OpenAI({
+    apiKey: 'test-key', maxRetries: 0,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      assert.equal(new URL(request.url).pathname, '/v1/responses');
+      const body = z.object({
+        text: z.object({ format: z.object({ type: z.literal('json_schema'), name: z.string(), strict: z.literal(true) }) }),
+      }).parse(await request.json());
+      assert.equal(body.text.format.name, 'test_module');
+      return Response.json({
+        id: 'resp_test', object: 'response', status: 'completed',
+        output: [{
+          type: 'message', id: 'msg_test', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: JSON.stringify(moduleFixture), annotations: [] }],
+        }],
+      });
+    },
+  });
+  assert.deepEqual(await new OpenAiGenerator(client, 'test-model').generate('System', 'Input'), moduleFixture);
+});
+
+test('OpenAI adapter rejects incomplete SDK responses', async () => {
+  const client = new OpenAI({
+    apiKey: 'test-key', maxRetries: 0,
+    fetch: async () => Response.json({ id: 'resp_test', object: 'response', status: 'incomplete', output: [] }),
+  });
+  await assert.rejects(new OpenAiGenerator(client, 'test-model').generate('System', 'Input'), /complete structured module/);
+});
+````
+
 ````tests/mcp.test.ts
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -2064,7 +2140,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - run: node scripts/release.mjs
       - name: Validate Conventional Commit PR title
         if: github.event_name == 'pull_request'
@@ -2088,7 +2164,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - run: npm run check
       - run: npm audit --omit=dev
       - run: npm pack --dry-run
@@ -2109,7 +2185,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - run: npm pack
       - run: npm install --prefix .manager-tools --no-save pnpm@10 yarn@1 @yarnpkg/cli-dist@4 bun@1 --no-audit --no-fund
       - run: npm run check:manager -- ${{ matrix.manager }}
@@ -2155,7 +2231,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - name: Require a merged main commit and matching release metadata
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -2183,7 +2259,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - name: Build release assets and notes
         env:
           RELEASE_TAG: ${{ github.ref_name }}
