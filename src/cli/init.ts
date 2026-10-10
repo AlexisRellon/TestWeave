@@ -5,6 +5,7 @@ import { TerminalPrompter, type UserPrompter } from './prompts.js';
 import { createTestTruth } from '../schema/test-truth.js';
 import { detectIntegrations, readConfig, saveConfig, type ProjectConfig } from '../integrations/config.js';
 import { installIdeRules } from '../integrations/ide.js';
+import { mcpTarget } from '../integrations/mcp.js';
 import { installHook } from '../integrations/hooks.js';
 import { printBanner, printSetupOverview } from './banner.js';
 import { formatSelectedSummary } from './agent-selector.js';
@@ -39,7 +40,7 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   const actionVerb = options.isUpdate ? 'Update' : 'Initialize';
   const pastVerb = options.isUpdate ? 'updated' : 'initialized';
 
-  if (!options.yes && !await prompt.confirm(`${actionVerb} QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
+  if (!options.yes && !await prompt.confirm(`${actionVerb} QA contract, inject rules, skills & MCP configuration for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
     context.output.log(`${options.isUpdate ? 'Update' : 'Setup'} cancelled`);
     return;
   }
@@ -49,6 +50,11 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   if (config.hook) await installHook(context.root, context.git);
   await saveConfig(context.root, config);
 
+  const mcpFiles = [...new Set(config.integrations.flatMap((integration) => {
+    const target = mcpTarget(integration);
+    return target ? [target.file] : [];
+  }))];
+  if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);
   context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
 }

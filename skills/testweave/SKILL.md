@@ -25,11 +25,29 @@ TestWeave keeps manual QA test contracts (`test-truth.md`) synchronized with sou
 - **Pre-commit verification**: Run `testweave sync` to confirm zero QA drift.
 - **System diagnostics**: Run `testweave doctor` to ensure configuration, agent rules, and hooks are intact.
 
+## Test Categorization & Types
+
+Test cases in `test-truth.md` support explicit functional testing types:
+- `unit`: Unit testing for isolated logic, utilities, and components.
+- `integration`: Integration testing for multi-component and service boundaries.
+- `system`: System testing for complete end-to-end flows.
+- `sanity`: Sanity testing for quick verification of targeted bug fixes.
+- `smoke`: Smoke testing for fundamental build and readiness checks.
+- `regression`: Regression testing to verify unchanged features remain functional.
+- `uat`: User Acceptance Testing from the customer/operator perspective.
+- `ui`: UI testing for interactive visual elements, CLI prompts, and layouts.
+- `api`: API testing for MCP tool schemas, endpoints, and data contracts.
+- `interface`: Interface testing between distinct subsystems (IDEs, Git hooks).
+- `component`: Component testing for modular building blocks.
+- `e2e`: End-to-end lifecycle verification.
+
+For complete definitions, test design techniques (Boundary Value Analysis, Equivalence Partitioning), and authoring guidelines, see [reference.md](reference.md).
+
 ## Tools & Commands
 
 ### MCP Tools (when running in MCP-enabled agent)
 - `get_contract`: Inspect the current QA contract, registered modules, paths, and test cases.
-- `upsert_test_module`: Add or update a module in `test-truth.md` with stable test IDs, actions, and expected results.
+- `upsert_test_module`: Add or update a module in `test-truth.md` with stable test IDs, test types, actions, and expected results.
 - `check_drift`: Verify whether working tree changes or diffs diverge from the QA contract.
 
 ### CLI Commands
@@ -52,6 +70,6 @@ TestWeave keeps manual QA test contracts (`test-truth.md`) synchronized with sou
 
 1. **Read Contract**: Open `test-truth.md` or call `get_contract` to inspect existing test coverage for target files.
 2. **Implement Changes**: Modify the source code.
-3. **Update Test Contract**: Update or add test cases with clear actions and expected outcomes matching the new behavior.
+3. **Update Test Contract**: Update or add test cases with clear actions, types, and expected outcomes matching the new behavior.
 4. **Verify Alignment**: Run `testweave sync` (or call `check_drift`) to ensure zero drift.
 5. **Commit Together**: Commit `test-truth.md` in the exact same commit as the source code changes.

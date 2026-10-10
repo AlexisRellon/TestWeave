@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
-import { testTruthSchema, testModuleSchema } from '../src/schema/test-truth.js';
+import { testTruthSchema, testModuleSchema, testCaseSchema, TEST_TYPES } from '../src/schema/test-truth.js';
 import { parseTestTruth, serializeTestTruth } from '../src/engine/markdown.js';
 import { MarkdownContractStore } from '../src/engine/store.js';
 import { workspacePath } from '../src/engine/files.js';
@@ -25,6 +25,49 @@ test('rejects missing or duplicate contract blocks and schema violations', () =>
     assert.throws(() => testModuleSchema.parse({ ...moduleFixture, paths: [invalid] }));
   }
   assert.throws(() => testModuleSchema.parse({ ...moduleFixture, tests: [] }));
+});
+test('detailed test types parse, normalize synonyms, and accept aliases', () => {
+  for (const type of TEST_TYPES) {
+    const parsed = testCaseSchema.parse({
+      id: 'TYPE-001',
+      title: `Testing ${type}`,
+      type,
+      priority: 'high',
+      preconditions: [],
+      steps: [{ action: 'Perform action', data: '', expected: 'Outcome observed' }],
+      tags: [],
+    });
+    assert.equal(parsed.type, type);
+  }
+
+  const unitCase = testCaseSchema.parse({
+    id: 'SYN-001', title: 'Unit test', type: 'Unit Testing', priority: 'medium',
+    preconditions: [], steps: [{ action: 'Test', data: '', expected: 'Pass' }], tags: [],
+  });
+  assert.equal(unitCase.type, 'unit');
+
+  const uatCase = testCaseSchema.parse({
+    id: 'SYN-002', title: 'UAT test', type: 'UAT (User Acceptance)', priority: 'high',
+    preconditions: [], steps: [{ action: 'Sign off', data: '', expected: 'Accepted' }], tags: [],
+  });
+  assert.equal(uatCase.type, 'uat');
+
+  const aliasCase = testCaseSchema.parse({
+    id: 'ALIAS-001', title: 'Alias test', testType: 'API Testing', priority: 'critical',
+    preconditions: [], steps: [{ action: 'Request endpoint', data: '', expected: '200 OK' }], tags: [],
+  });
+  assert.equal(aliasCase.type, 'api');
+
+  const defaultCase = testCaseSchema.parse({
+    id: 'DEF-001', title: 'Default test', priority: 'low',
+    preconditions: [], steps: [{ action: 'Run check', data: '', expected: 'Pass' }], tags: [],
+  });
+  assert.equal(defaultCase.type, 'regression');
+
+  assert.throws(() => testCaseSchema.parse({
+    id: 'INV-001', title: 'Invalid test', type: 'invalid-type-foo', priority: 'low',
+    preconditions: [], steps: [{ action: 'Run check', data: '', expected: 'Pass' }], tags: [],
+  }));
 });
 test('upsert validates globally and preserves prose outside the authoritative block', async (t) => {
   const root = await temporaryDirectory(t);

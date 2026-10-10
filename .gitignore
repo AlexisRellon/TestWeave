@@ -9,3 +9,6 @@ coverage/
 .manager-tools/
 release-assets/
 .vscode/
+.cursor/
+.mcp.json
+.lean-ctx/

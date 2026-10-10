@@ -1,6 +1,6 @@
 import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
 import type { IdeIntegration } from './config.js';
-import { installVsCodeServer, hasVsCodeServer } from './vscode.js';
+import { installMcpServer, hasMcpServer, mcpTarget } from './mcp.js';
 import { installSkill, hasSkill } from './skills.js';
 import { getSkillsDirForAgent } from './agents.js';
 
@@ -43,8 +43,9 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
       let text = await readOptional(file) ?? '';
       if (integration === 'vscode' && !text) text = '---\napplyTo: "**"\n---\n\n';
       await atomicWrite(file, injectRules(text));
-      if (integration === 'vscode') await installVsCodeServer(root);
     }
+    const target = mcpTarget(integration);
+    if (target) await installMcpServer(root, target);
     const skillsDir = getSkillsDirForAgent(integration);
     if (skillsDir && skillsDir !== '.vscode') {
       await installSkill(root, skillsDir);
@@ -53,14 +54,13 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
 }
 
 export async function hasIdeRules(root: string, integration: IdeIntegration): Promise<boolean> {
+  const target = mcpTarget(integration);
+  if (target && !await hasMcpServer(root, target)) return false;
   const ruleFile = IDE_FILES[integration];
   if (ruleFile) {
     const text = await readOptional(await workspacePath(root, ruleFile));
     const rulesOk = text !== undefined && text.includes(QA_RULES) && injectRules(text) === text;
     if (!rulesOk) return false;
-    if (integration === 'vscode') {
-      return await hasVsCodeServer(root);
-    }
     return true;
   }
   const skillsDir = getSkillsDirForAgent(integration);

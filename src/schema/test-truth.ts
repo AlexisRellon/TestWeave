@@ -9,14 +9,114 @@ export const sourcePatternSchema = z.string().min(1).max(500).refine(
   'Use a positive, workspace-relative POSIX glob without parent traversal',
 );
 export const testStepSchema = z.strictObject({ action: text, data: z.string().max(20_000), expected: text });
-export const testCaseSchema = z.strictObject({
+
+export const TEST_TYPES = [
+  'unit',
+  'integration',
+  'system',
+  'sanity',
+  'smoke',
+  'regression',
+  'uat',
+  'ui',
+  'api',
+  'interface',
+  'component',
+  'e2e',
+] as const;
+
+export type TestType = typeof TEST_TYPES[number];
+
+export const TEST_TYPE_LABELS: Record<TestType, string> = {
+  unit: 'Unit Testing',
+  integration: 'Integration Testing',
+  system: 'System Testing',
+  sanity: 'Sanity Testing',
+  smoke: 'Smoke Testing',
+  regression: 'Regression Testing',
+  uat: 'User Acceptance Testing (UAT)',
+  ui: 'UI Testing',
+  api: 'API Testing',
+  interface: 'Interface Testing',
+  component: 'Component Testing',
+  e2e: 'End-to-End Testing',
+};
+
+const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
+  unit: 'unit',
+  'unit testing': 'unit',
+  'unit-testing': 'unit',
+  integration: 'integration',
+  'integration testing': 'integration',
+  'integration-testing': 'integration',
+  system: 'system',
+  'system testing': 'system',
+  'system-testing': 'system',
+  sanity: 'sanity',
+  'sanity testing': 'sanity',
+  'sanity-testing': 'sanity',
+  smoke: 'smoke',
+  'smoke testing': 'smoke',
+  'smoke-testing': 'smoke',
+  regression: 'regression',
+  'regression testing': 'regression',
+  'regression-testing': 'regression',
+  uat: 'uat',
+  'user acceptance': 'uat',
+  'user acceptance testing': 'uat',
+  'user-acceptance': 'uat',
+  'user-acceptance-testing': 'uat',
+  'uat (user acceptance)': 'uat',
+  'user acceptance (uat)': 'uat',
+  acceptance: 'uat',
+  ui: 'ui',
+  'ui testing': 'ui',
+  'ui-testing': 'ui',
+  gui: 'ui',
+  'gui testing': 'ui',
+  api: 'api',
+  'api testing': 'api',
+  'api-testing': 'api',
+  interface: 'interface',
+  'interface testing': 'interface',
+  'interface-testing': 'interface',
+  component: 'component',
+  'component testing': 'component',
+  'component-testing': 'component',
+  e2e: 'e2e',
+  'e2e testing': 'e2e',
+  'end to end': 'e2e',
+  'end-to-end': 'e2e',
+  'end-to-end testing': 'e2e',
+};
+
+export const testTypeSchema = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim().toLowerCase();
+  return TEST_TYPE_SYNONYMS[normalized] ?? normalized;
+}, z.enum(TEST_TYPES));
+
+const baseTestCaseSchema = z.strictObject({
   id: identifier,
   title: text,
+  type: testTypeSchema.default('regression'),
   priority: z.enum(['low', 'medium', 'high', 'critical']),
   preconditions: z.array(text).max(100),
   steps: z.array(testStepSchema).min(1).max(500),
   tags: z.array(z.string().trim().min(1).max(100)).max(100),
 });
+
+export const testCaseSchema = z.preprocess((input) => {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const record = { ...(input as Record<string, unknown>) };
+    if ('testType' in record && !('type' in record)) {
+      record.type = record.testType;
+      delete record.testType;
+    }
+    return record;
+  }
+  return input;
+}, baseTestCaseSchema);
 export const testModuleSchema = z.strictObject({
   id: identifier,
   name: text,

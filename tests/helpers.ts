@@ -11,7 +11,7 @@ export const moduleFixture: TestModule = {
   id: 'auth', name: 'Authentication', description: 'Users sign in with valid credentials.',
   paths: ['src/auth/**'],
   tests: [{
-    id: 'AUTH-001', title: 'Sign in', priority: 'high', preconditions: ['A registered user exists'],
+    id: 'AUTH-001', title: 'Sign in', type: 'smoke', priority: 'high', preconditions: ['A registered user exists'],
     steps: [{ action: 'Submit valid credentials', data: 'A test account', expected: 'Dashboard is shown' }],
     tags: ['smoke'],
   }],

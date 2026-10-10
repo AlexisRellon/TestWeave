@@ -15,6 +15,8 @@ import {
 import {
   TESTWEAVE_SKILL_NAME,
   TESTWEAVE_SKILL_CONTENT,
+  TESTWEAVE_REFERENCE_NAME,
+  TESTWEAVE_REFERENCE_CONTENT,
   installSkill,
   hasSkill,
 } from '../src/integrations/skills.js';
@@ -55,11 +57,17 @@ test('agent directory defines 79 agents split into universal and additional', ()
   assert.equal(getSkillsDirForAgent('aider-desk'), '.aider-desk/skills');
 });
 
-test('TestWeave custom skill installs and validates SKILL.md format', async (t) => {
+test('TestWeave custom skill installs and validates SKILL.md and reference.md format', async (t) => {
   const root = await temporaryDirectory(t);
   assert.equal(TESTWEAVE_SKILL_NAME, 'testweave');
+  assert.equal(TESTWEAVE_REFERENCE_NAME, 'reference.md');
   assert.match(TESTWEAVE_SKILL_CONTENT, /name: testweave/);
   assert.match(TESTWEAVE_SKILL_CONTENT, /# TestWeave QA Contract Skill/);
+  assert.match(TESTWEAVE_SKILL_CONTENT, /reference\.md/);
+  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Functional Testing/);
+  assert.match(TESTWEAVE_REFERENCE_CONTENT, /GeeksforGeeks/);
+  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Boundary Value Analysis/);
+  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Equivalence Class Partitioning/);
 
   assert.equal(await hasSkill(root, '.agents/skills'), false);
   const installedFile = await installSkill(root, '.agents/skills');
@@ -70,6 +78,18 @@ test('TestWeave custom skill installs and validates SKILL.md format', async (t) 
   assert.match(content, /get_contract/);
   assert.match(content, /upsert_test_module/);
   assert.match(content, /testweave sync/);
+
+  const refFile = path.join(path.dirname(installedFile), 'reference.md');
+  const refContent = await readFile(refFile, 'utf8');
+  assert.match(refContent, /Unit Testing/);
+  assert.match(refContent, /Regression Testing/);
+  assert.match(refContent, /Integration Testing/);
+  assert.match(refContent, /Smoke Testing/);
+  assert.match(refContent, /System Testing/);
+  assert.match(refContent, /Sanity Testing/);
+  assert.match(refContent, /User Acceptance Testing \(UAT\)/);
+  assert.match(refContent, /UI Testing/);
+  assert.match(refContent, /API Testing/);
 });
 
 test('installIdeRules installs custom skill and agent rules across multiple agent targets', async (t) => {
