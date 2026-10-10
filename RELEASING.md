@@ -32,7 +32,18 @@ The tag must point to a commit on `main`. The workflow validates canonical SemVe
 
 The workflow creates a GitHub Release named **TestWeave v0.2.0**, with that version's changelog section, installation instructions, `testweave-0.2.0.tgz`, and `SHA256SUMS`. Prerelease tags create GitHub prereleases and do not become the latest stable release.
 
-The workflow publishes GitHub release artifacts. Publishing the package to the npm registry requires a separate registry setup and is not part of this workflow.
+The workflow publishes GitHub release artifacts. Registry publication is a separate maintainer step using the exact tested release tarball:
+
+```sh
+gh release download v0.2.0 --pattern testweave-0.2.0.tgz --pattern SHA256SUMS --dir release-assets
+cd release-assets
+sha256sum --check SHA256SUMS
+npm login --registry=https://registry.npmjs.org
+npm publish ./testweave-0.2.0.tgz --access public --registry=https://registry.npmjs.org
+npm view testweave@0.2.0 version dist.integrity
+```
+
+On PowerShell, use `Get-FileHash -Algorithm SHA256` and compare the hash with `SHA256SUMS`. For prereleases, add `--tag next` to `npm publish`. Complete any npm account or two-factor authentication challenge locally; never put credentials in repository files or PRs. Confirm that the registry's tarball integrity matches the released artifact. This publishes already-built files and does not rebuild a different package.
 
 ## Failure and recovery
 

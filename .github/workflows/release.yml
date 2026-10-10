@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - name: Require a merged main commit and matching release metadata
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --engine-strict
       - name: Build release assets and notes
         env:
           RELEASE_TAG: ${{ github.ref_name }}

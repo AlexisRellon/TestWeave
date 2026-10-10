@@ -10,6 +10,14 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(deps)
+    # These upgrades require a deliberate change to the supported Node baseline.
+    ignore:
+      - dependency-name: '@types/node'
+        versions: ['>=21']
+      - dependency-name: commander
+        versions: ['>=15']
+      - dependency-name: openai
+        versions: ['>=7']
     groups:
       production-patch-and-minor:
         dependency-type: production
