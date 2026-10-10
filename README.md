@@ -73,20 +73,36 @@ This bootstraps:
 3. Configured IDE rules (`.cursorrules`, `CLAUDE.md`, `.windsurfrules`, `.github/instructions/testweave.instructions.md`, `.vscode/mcp.json`).
 4. Custom agent skill definitions (`<skillsDir>/testweave/SKILL.md`) for detected and selected agents.
 
-### 2. Verify contract alignment
+### 2. Update agent skills, IDE rules, and hooks
+
+When upgrading TestWeave or adding new AI agents, refresh your workspace definitions:
+
+```sh
+npx testweave update
+# or accept current/detected integrations non-interactively:
+npx testweave update --yes
+```
+
+This synchronizes:
+1. Agent custom skill files (`<skillsDir>/testweave/SKILL.md`) to the latest version.
+2. Injected IDE rules (`<!-- testweave:start --> ... <!-- testweave:end -->`).
+3. Git pre-push hooks and workspace `.testweave.json`.
+4. Re-validates the authoritative `test-truth.md` contract.
+
+### 3. Verify contract alignment
 
 ```sh
 npx testweave sync
 ```
 
-### 3. Check and repair environment diagnostics
+### 4. Check and repair environment diagnostics
 
 ```sh
 npx testweave doctor
 npx testweave doctor --fix
 ```
 
-### 4. Export manual test suites
+### 5. Export manual test suites
 
 ```sh
 npx testweave generate --target xray --format csv --output test-cases.csv
@@ -108,6 +124,8 @@ TestWeave supports **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (Plug'n'Pl
 
 > [!NOTE]
 > Under **Bun**, the CLI's Node shebang keeps **Node.js 20+** as the runtime. For **Yarn Plug'n'Play**, ensure `pnpEnableEsmLoader: true` is set in `.yarnrc.yml` because TestWeave is a pure ESM package. TestWeave automatically generates loaders so Git hooks and VS Code MCP servers resolve dependencies outside a Yarn shell.
+>
+> To update skills and rules in an existing project at any time, run `npx testweave update` (or `pnpm exec testweave update`, `bun run testweave update`).
 
 ### GitHub Packages
 
@@ -232,7 +250,7 @@ TestWeave enforces manual QA synchronization with strict, conservative rules:
 
 ## 79+ AI Coding Agent Ecosystem
 
-TestWeave includes deep support for modern AI agents and IDEs. During initialization (`testweave setup` or `testweave init`), an interactive selector allows choosing from **79 supported agents**.
+TestWeave includes deep support for modern AI agents and IDEs. During initialization or updates (`testweave setup`, `testweave init`, or `testweave update`), an interactive selector allows choosing from **79 supported agents**. Run `npx testweave update` at any time to synchronize newly released agent skills and refreshed prompts into your repository without overwriting existing test scenarios.
 
 ```
   ████████╗███████╗███████╗████████╗██╗    ██╗███████╗ █████╗ ██╗   ██╗███████╗
@@ -403,6 +421,10 @@ Commands:
   init, setup [options]
     -y, --yes          Accept default/detected integrations non-interactively
     --no-hook          Skip installing Git pre-push hook
+
+  update [options]
+    -y, --yes          Accept default/existing integrations non-interactively
+    --no-hook          Skip installing or updating Git pre-push hook
 
   sync [options]
     --base <ref>       Git revision baseline to compare against (default: upstream tracking branch)

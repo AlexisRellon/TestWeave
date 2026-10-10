@@ -7,4 +7,5 @@ coverage/
 *.tgz
 .testweave-exports/
 .manager-tools/
+release-assets/
 .vscode/

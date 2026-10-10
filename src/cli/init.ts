@@ -9,7 +9,7 @@ import { installHook } from '../integrations/hooks.js';
 import { printBanner, printSetupOverview } from './banner.js';
 import { formatSelectedSummary } from './agent-selector.js';
 
-export interface InitOptions { yes?: boolean; hook?: boolean }
+export interface InitOptions { yes?: boolean; hook?: boolean; isUpdate?: boolean }
 
 export async function runInit(context: CliContext, options: InitOptions, prompt: UserPrompter = new TerminalPrompter()): Promise<void> {
   printBanner(context.output.log);
@@ -36,8 +36,11 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
     hook: options.hook !== false && detected.git && (previous?.hook ?? true),
   };
 
-  if (!options.yes && !await prompt.confirm(`Initialize QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
-    context.output.log('Setup cancelled');
+  const actionVerb = options.isUpdate ? 'Update' : 'Initialize';
+  const pastVerb = options.isUpdate ? 'updated' : 'initialized';
+
+  if (!options.yes && !await prompt.confirm(`${actionVerb} QA contract, inject rules & skills for ${integrations.join(', ') || 'selected agents'}, and ${config.hook ? 'install' : 'skip'} pre-push hook?`)) {
+    context.output.log(`${options.isUpdate ? 'Update' : 'Setup'} cancelled`);
     return;
   }
 
@@ -46,6 +49,7 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   if (config.hook) await installHook(context.root, context.git);
   await saveConfig(context.root, config);
 
-  context.output.log(pc.green(`✔ TestWeave initialized. Contract ${created ? 'created' : 'validated'}.`));
+  context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
 }
+

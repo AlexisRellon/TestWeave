@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
 import { createContext } from './context.js';
 import { runInit, type InitOptions } from './init.js';
+import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
@@ -23,6 +24,10 @@ export function createProgram(): Command {
     .option('-y, --yes', 'Accept default integrations without prompting')
     .option('--no-hook', 'Skip installing a Git hook')
     .action(async (options: InitOptions) => { await runInit(await context(), options); });
+  program.command('update').description('Update agent skills, IDE rules, and hooks to the latest TestWeave definitions')
+    .option('-y, --yes', 'Accept default or existing integrations without prompting')
+    .option('--no-hook', 'Skip installing or updating a Git hook')
+    .action(async (options: UpdateOptions) => { await runUpdate(await context(), options); });
   program.command('doctor').description('Validate the contract, IDE rules, and hook')
     .option('--fix', 'Repair supported configuration problems without prompting')
     .option('--json', 'Emit machine-readable diagnostics')

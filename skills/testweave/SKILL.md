@@ -45,6 +45,8 @@ TestWeave keeps manual QA test contracts (`test-truth.md`) synchronized with sou
   - `--provider <openai|anthropic>`: AI module drafting.
 - `testweave init` / `testweave setup`: Initialize contract, agent skills, and Git pre-push hook.
   - `-y, --yes`: Accept defaults non-interactively.
+- `testweave update`: Update agent skills, IDE rules, and hooks to the latest definitions.
+  - `-y, --yes`: Accept existing or detected integrations non-interactively.
 
 ## Development Workflow
 

@@ -25,7 +25,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
     {
       "id": "cli-core",
       "name": "CLI Core & Commands",
-      "description": "CLI entrypoints, context, setup/init, sync, doctor, and generate commands",
+      "description": "CLI entrypoints, context, setup/init, update, sync, doctor, and generate commands",
       "paths": [
         "src/cli/**/*.ts",
         "src/index.ts"
@@ -50,6 +50,25 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             "setup",
             "init"
           ]
+        },
+        {
+          "id": "CLI-002",
+          "title": "Update command refreshes agent skills, IDE rules, and hooks",
+          "priority": "high",
+          "preconditions": [
+            "TestWeave workspace initialized or fresh"
+          ],
+          "steps": [
+            {
+              "action": "Run testweave update with --yes or interactive selection",
+              "data": "npx testweave update --yes",
+              "expected": "Refreshes custom skills and IDE rules, updates hooks, and reports updated contract status"
+            }
+          ],
+          "tags": [
+            "cli",
+            "update"
+          ]
         }
       ]
     },
@@ -72,9 +91,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Inspect 79 agents catalog and install custom skill to target directories",
-              "data": "ALL_AGENTS, installSkill, hasSkill",
-              "expected": "Validates 23 universal agents and 56 dedicated agents, installs SKILL.md cleanly"
+              "action": "Inspect 79 agents catalog and install or update custom skill across targets",
+              "data": "ALL_AGENTS, installSkill, hasSkill, testweave update",
+              "expected": "Validates 23 universal agents and 56 dedicated agents, installs and refreshes SKILL.md cleanly"
             }
           ],
           "tags": [
