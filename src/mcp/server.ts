@@ -20,7 +20,7 @@ async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.4.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.5.0' });
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',

@@ -51,7 +51,7 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   await saveConfig(context.root, config);
 
   const mcpFiles = [...new Set(config.integrations.flatMap((integration) => {
-    const target = mcpTarget(integration);
+    const target = mcpTarget(integration, context.root);
     return target ? [target.file] : [];
   }))];
   if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);

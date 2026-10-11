@@ -1,5 +1,8 @@
 import pc from 'picocolors';
-import { ADDITIONAL_AGENTS, type AgentDefinition } from '../integrations/agents.js';
+import { ADDITIONAL_AGENTS, UNIVERSAL_AGENTS, type AgentDefinition } from '../integrations/agents.js';
+import { mcpTarget } from '../integrations/mcp.js';
+
+export const SELECTABLE_AGENTS = [...UNIVERSAL_AGENTS.filter((agent) => mcpTarget(agent.id)), ...ADDITIONAL_AGENTS];
 
 export function formatSelectedSummary(selectedIds: Set<string>): string {
   const selectedNames: string[] = [];
@@ -8,9 +11,9 @@ export function formatSelectedSummary(selectedIds: Set<string>): string {
     selectedNames.push('Amp', 'Cline', 'Codex');
   }
 
-  for (const agent of ADDITIONAL_AGENTS) {
+  for (const agent of SELECTABLE_AGENTS) {
     if (selectedIds.has(agent.id) || (agent.id === 'claude-code' && selectedIds.has('claude'))) {
-      selectedNames.push(agent.displayName);
+      if (!selectedNames.includes(agent.displayName)) selectedNames.push(agent.displayName);
     }
   }
 
@@ -60,9 +63,9 @@ export async function promptAgentSelection(
   let lastRenderedLines = 0;
 
   const getFiltered = (): AgentDefinition[] => {
-    if (!searchQuery.trim()) return ADDITIONAL_AGENTS;
+    if (!searchQuery.trim()) return SELECTABLE_AGENTS;
     const q = searchQuery.toLowerCase().trim();
-    return ADDITIONAL_AGENTS.filter(
+    return SELECTABLE_AGENTS.filter(
       (a) =>
         a.displayName.toLowerCase().includes(q) ||
         a.id.toLowerCase().includes(q) ||

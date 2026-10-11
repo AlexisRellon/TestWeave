@@ -72,7 +72,7 @@ This bootstraps:
 2. The Git `pre-push` hook (or Husky v9 integration).
 3. Configured IDE rules (`.cursorrules`, `CLAUDE.md`, `.windsurfrules`, `.github/instructions/testweave.instructions.md`, `.vscode/mcp.json`).
 4. Custom agent skill definitions (`<skillsDir>/testweave/SKILL.md`) for detected and selected agents.
-5. Project MCP configuration for selected Cursor (`.cursor/mcp.json`), Claude Code (`.mcp.json`), and VS Code (`.vscode/mcp.json`) clients. Existing servers and JSONC comments are preserved; invalid configurations are reported without overwriting them.
+5. Project MCP configuration for selected [verified clients](docs/mcp-providers.md), including Codex, Gemini CLI, OpenCode, Kilo Code, Cursor, Claude Code, and VS Code. Existing servers and comments are preserved; invalid configurations are reported without overwriting them.
 
 ### 2. Update agent skills, IDE rules, and hooks
 
@@ -354,7 +354,37 @@ npx --no-install testweave mcp
 
 ### MCP Client Configurations
 
-Setup, init, and update automatically merge the `testweave` server for selected Cursor, Claude Code, and VS Code integrations. Generated entries use absolute Node and installed CLI paths with `--cwd` bound to the project, retaining Yarn PnP loaders when needed. The examples below are alternatives for manual configuration. Other agents receive skills but require their own MCP client configuration.
+Setup, init, and update automatically merge the `testweave` server for 26 verified clients when selected. Doctor can repair their registrations. Universal agents with native MCP support are individually selectable; selecting universal skills alone does not register them. Generated entries use absolute Node and installed CLI paths with `--cwd` bound to the project, retaining Yarn PnP loaders when needed. See the [provider compatibility guide](docs/mcp-providers.md) for paths, formats, official sources, and registration guidance across the full 79-agent skill catalog.
+
+#### Register a provider or custom client
+
+Register one verified provider without running full setup, or print its native configuration:
+
+```sh
+testweave mcp install --provider codex
+testweave mcp install --provider gemini-cli
+testweave mcp install --provider opencode
+testweave mcp config --provider mistral-vibe
+```
+
+Provider registration uses project files. Codex and Grok use TOML tables; Mistral Vibe uses TOML array tables; OpenCode, Kilo Code and Posit Assistant use command arrays. Existing `opencode.jsonc` and root Kilo configs are preferred when present. Provider options cannot be combined with custom config paths or server-map keys.
+
+Inject into any workspace JSON/JSONC MCP configuration, preserving comments and other servers. Set the server-map key to match your client (default: `mcpServers`):
+
+```sh
+testweave mcp install --config .other-client/mcp.json --key servers
+testweave mcp config
+testweave mcp config --format toml
+```
+
+The config commands print absolute launch paths for manual use, including clients whose settings live outside the workspace. The TOML output is a Codex `[mcp_servers.testweave]` entry. Add it to your Codex config, or register the built local CLI:
+
+```sh
+codex mcp add testweave -- node /absolute/path/to/TestWeave/dist/cli/index.js --cwd /absolute/path/to/project mcp
+codex mcp get testweave
+```
+
+Restart the Codex session after registration to load the server; project configuration requires a trusted workspace. Custom JSON injection is explicit; setup/update/doctor manage selected verified provider locations. For an existing inline or dotted TestWeave TOML declaration, convert it to a dedicated table before automatic update.
 
 #### Cursor (`.cursor/mcp.json`)
 ```json

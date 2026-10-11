@@ -44,7 +44,7 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
       if (integration === 'vscode' && !text) text = '---\napplyTo: "**"\n---\n\n';
       await atomicWrite(file, injectRules(text));
     }
-    const target = mcpTarget(integration);
+    const target = mcpTarget(integration, root);
     if (target) await installMcpServer(root, target);
     const skillsDir = getSkillsDirForAgent(integration);
     if (skillsDir && skillsDir !== '.vscode') {
@@ -54,7 +54,7 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
 }
 
 export async function hasIdeRules(root: string, integration: IdeIntegration): Promise<boolean> {
-  const target = mcpTarget(integration);
+  const target = mcpTarget(integration, root);
   if (target && !await hasMcpServer(root, target)) return false;
   const ruleFile = IDE_FILES[integration];
   if (ruleFile) {

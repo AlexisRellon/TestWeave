@@ -11,4 +11,5 @@ release-assets/
 .vscode/
 .cursor/
 .mcp.json
+.codex/config.toml
 .lean-ctx/

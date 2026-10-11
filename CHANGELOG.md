@@ -4,6 +4,20 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-11
+
+### Added
+
+- Verified project MCP registrations for 26 coding clients, including Codex, Gemini CLI, Amp, OpenCode, Kilo, and Mistral Vibe, integrated with setup, update, and doctor repair.
+- Provider-aware `mcp config` and `mcp install` commands, with native JSON, JSONC, command-array, and TOML output and custom JSONC server-map injection.
+- A sourced MCP compatibility guide covering all 79 skill-catalog agents, including manual registration instructions and explicit unverified cases.
+
+### Changed
+
+- Made universal agents with native MCP registrations individually selectable and detected existing supported project configuration.
+- Preserved unrelated TOML settings, servers, and comments, and reused existing OpenCode and Kilo configuration alternatives.
+- Bundled the provider guide in the npm package and ignored generated machine-specific Codex configuration.
+
 ## [0.4.0] - 2026-10-10
 
 ### Added
