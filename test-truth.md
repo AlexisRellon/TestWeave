@@ -42,9 +42,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Run testweave setup or testweave init with --yes or interactive selection on v0.4.0",
+              "action": "Run testweave setup or testweave init with --yes or interactive selection on the current release",
               "data": "npx testweave setup",
-              "expected": "Displays retro ASCII banner, status lines and agent selection; installs rules, custom skills and project MCP entries for selected Cursor, Claude Code and VS Code clients, reporting configured files for v0.4.0"
+              "expected": "Displays retro ASCII banner, status lines and agent selection, including universal agents with verified native MCP registrations; detects existing supported client configuration directories and files; installs rules, skills and project MCP entries for selected verified providers and reports configured files; mcp install --provider registers a single client, custom JSONC paths and keys remain supported, and mcp config exports provider-native JSON or TOML without starting the server"
             }
           ],
           "tags": [
@@ -128,14 +128,14 @@ The JSON block below is authoritative. Update affected modules and test steps wi
         },
         {
           "id": "INT-003",
-          "title": "Project MCP configuration preserves settings and supports repair",
+          "title": "Built-in and custom MCP configuration preserves settings and supports repair",
           "type": "integration",
           "priority": "high",
-          "preconditions": ["Project with selected Cursor, Claude Code and VS Code integrations"],
+          "preconditions": ["Project with selected verified MCP integrations listed in docs/mcp-providers.md"],
           "steps": [
             {
               "action": "Run setup twice with existing servers, comments and trailing commas, then connect using the generated entry",
-              "data": ".cursor/mcp.json, .mcp.json, .vscode/mcp.json; testweave setup --yes",
+              "data": "JSONC server maps, OpenCode/Kilo/Posit command arrays, Codex/Grok TOML tables and Mistral Vibe TOML array tables; testweave setup --yes",
               "expected": "One testweave entry uses absolute runtime and CLI paths with project --cwd; other settings and comments survive, repeated setup is idempotent, and MCP tools and resources respond"
             },
             {
@@ -152,6 +152,26 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Select only universal skills during setup",
               "data": "integrations: universal",
               "expected": "Skills install without creating MCP configurations for unselected clients"
+            },
+            {
+              "action": "Inject into a custom client JSONC file twice using a custom server-map key; attempt an invalid map, reserved key and path outside the workspace",
+              "data": "testweave mcp install --config .custom/mcp.json --key customServers",
+              "expected": "Preserves comments and other servers, writes one idempotent testweave entry, and rejects invalid maps, reserved keys and outside paths without overwriting them"
+            },
+            {
+              "action": "Export generic JSON and Codex TOML launch entries; register in Codex and connect using the configured launch",
+              "data": "testweave mcp config; testweave mcp config --format toml; codex mcp add testweave -- <command> <args>; codex mcp get testweave",
+              "expected": "Outputs absolute runtime and CLI paths with project --cwd, Codex reads the registered entry, and its launch responds with three tools and the living contract resource; unsupported output formats fail"
+            },
+            {
+              "action": "Install and export with --provider for JSON, command-array and TOML clients; repeat installation and run doctor repair after removing entries",
+              "data": "testweave mcp install --provider codex; --provider opencode; --provider mistral-vibe; testweave mcp config --provider amp; testweave doctor --fix",
+              "expected": "Uses verified project paths and native schemas, preserves other servers and comments, keeps one idempotent TestWeave entry and repairs missing registrations; clients sharing .mcp.json remain healthy together; unsupported providers and conflicting provider/custom options fail before writing"
+            },
+            {
+              "action": "Use existing opencode.jsonc and root kilo.json settings; provide malformed or duplicate TOML and inline TestWeave tables",
+              "data": "opencode.jsonc; kilo.json; .codex/config.toml; .grok/config.toml; .vibe/config.toml",
+              "expected": "Updates existing JSONC alternatives instead of creating competing configuration; TOML preserves unrelated settings, quoted table names, multiline values and comments; malformed TOML, wrong map/array shapes, duplicate TestWeave array entries and unsupported inline declarations fail without changing files; universal skills alone do not register individual MCP clients"
             }
           ],
           "tags": ["mcp", "setup", "repair", "preservation"]
@@ -205,8 +225,8 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           "steps": [
             {
               "action": "Execute MCP tools, contract validations, and server lifecycle matching release version",
-              "data": "get_contract, upsert_test_module, check_drift, McpServer v0.4.0",
-              "expected": "Contracts are serialized, parsed, server version v0.4.0 matches package, and drift is accurately calculated"
+              "data": "get_contract, upsert_test_module, check_drift, McpServer current release",
+              "expected": "Contracts are serialized, parsed, server version matches package, and drift is accurately calculated"
             }
           ],
           "tags": [

@@ -10,9 +10,10 @@ import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
+import { runMcpConfig, runMcpInstall } from './mcp.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.4.0')
+  const program = new Command().name('testweave').version('0.5.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -48,11 +49,21 @@ export function createProgram(): Command {
     .option('--context <file>', 'Workspace-relative context file to send to the provider')
     .option('--module <id>', 'Existing module to update in the AI draft')
     .action(async (options: unknown) => { await runGenerate(await context(), options); });
-  program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
+  const mcp = program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
     .action(async () => {
       const { serveMcp } = await import('../mcp/server.js');
       await serveMcp(await context());
     });
+  mcp.command('config').description('Print an MCP entry for any client, including Codex')
+    .option('--provider <provider>', 'Verified client ID, such as codex, opencode or gemini-cli')
+    .option('--format <format>', 'json or toml (defaults to the provider format)')
+    .option('--key <key>', 'JSON server map key (default: mcpServers)')
+    .action(async (options: unknown) => { await runMcpConfig(await context(), options); });
+  mcp.command('install').description('Register MCP for a verified provider or a custom workspace JSON/JSONC config')
+    .option('--provider <provider>', 'Verified client ID, such as codex, opencode or gemini-cli')
+    .option('--config <file>', 'Workspace-relative custom client configuration file')
+    .option('--key <key>', 'Custom server map key (default: mcpServers)')
+    .action(async (options: unknown) => { await runMcpInstall(await context(), options); });
   return program;
 }
 export async function main(argv = process.argv): Promise<void> {

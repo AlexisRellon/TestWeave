@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, readOptional } from '../engine/files.js';
+import { MCP_INTEGRATIONS, mcpTarget } from './mcp.js';
 
 export const integrationSchema = z.string().min(1);
 export type IdeIntegration = string;
@@ -22,6 +23,11 @@ export function detectIntegrations(root: string): DetectedIntegrations {
   if (exists('.windsurfrules') || exists('.windsurf')) detectedIdes.push('windsurf');
   if (exists('.aider-desk')) detectedIdes.push('aider-desk');
   if (exists('.agents/skills')) detectedIdes.push('universal');
+  for (const id of MCP_INTEGRATIONS) {
+    const target = mcpTarget(id, root)!;
+    if (target.file === '.mcp.json' || detectedIdes.includes(id)) continue;
+    if (exists(target.file.split('/')[0]!)) detectedIdes.push(id);
+  }
 
   return {
     git: exists('.git'),

@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -41,6 +41,7 @@ Generated from the working files with `npm run bundle:source`.
   "files": [
     "dist",
     "skills",
+    "docs/mcp-providers.md",
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
@@ -66,6 +67,7 @@ Generated from the working files with `npm run bundle:source`.
     "prompts": "2.4.2",
     "remark-parse": "11.0.0",
     "simple-git": "4.0.2",
+    "toml-eslint-parser": "0.10.0",
     "unified": "11.0.5",
     "zod": "4.6.5"
   },
@@ -76,6 +78,26 @@ Generated from the working files with `npm run bundle:source`.
     "semver": "7.8.5",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "es-define-property": "npm:@socketregistry/es-define-property@^1",
+    "function-bind": "npm:@socketregistry/function-bind@^1",
+    "gopd": "npm:@socketregistry/gopd@^1",
+    "has-symbols": "npm:@socketregistry/has-symbols@^1",
+    "hasown": "npm:@socketregistry/hasown@^1",
+    "object-assign": "npm:@socketregistry/object-assign@^1",
+    "safer-buffer": "npm:@socketregistry/safer-buffer@^1",
+    "side-channel": "npm:@socketregistry/side-channel@^1"
+  },
+  "resolutions": {
+    "es-define-property": "npm:@socketregistry/es-define-property@^1",
+    "function-bind": "npm:@socketregistry/function-bind@^1",
+    "gopd": "npm:@socketregistry/gopd@^1",
+    "has-symbols": "npm:@socketregistry/has-symbols@^1",
+    "hasown": "npm:@socketregistry/hasown@^1",
+    "object-assign": "npm:@socketregistry/object-assign@^1",
+    "safer-buffer": "npm:@socketregistry/safer-buffer@^1",
+    "side-channel": "npm:@socketregistry/side-channel@^1"
   }
 }
 ````
@@ -129,12 +151,16 @@ release-assets/
 .vscode/
 .cursor/
 .mcp.json
+.codex/config.toml
 .lean-ctx/
 ````
 
 ````src/cli/agent-selector.ts
 import pc from 'picocolors';
-import { ADDITIONAL_AGENTS, type AgentDefinition } from '../integrations/agents.js';
+import { ADDITIONAL_AGENTS, UNIVERSAL_AGENTS, type AgentDefinition } from '../integrations/agents.js';
+import { mcpTarget } from '../integrations/mcp.js';
+
+export const SELECTABLE_AGENTS = [...UNIVERSAL_AGENTS.filter((agent) => mcpTarget(agent.id)), ...ADDITIONAL_AGENTS];
 
 export function formatSelectedSummary(selectedIds: Set<string>): string {
   const selectedNames: string[] = [];
@@ -143,9 +169,9 @@ export function formatSelectedSummary(selectedIds: Set<string>): string {
     selectedNames.push('Amp', 'Cline', 'Codex');
   }
 
-  for (const agent of ADDITIONAL_AGENTS) {
+  for (const agent of SELECTABLE_AGENTS) {
     if (selectedIds.has(agent.id) || (agent.id === 'claude-code' && selectedIds.has('claude'))) {
-      selectedNames.push(agent.displayName);
+      if (!selectedNames.includes(agent.displayName)) selectedNames.push(agent.displayName);
     }
   }
 
@@ -195,9 +221,9 @@ export async function promptAgentSelection(
   let lastRenderedLines = 0;
 
   const getFiltered = (): AgentDefinition[] => {
-    if (!searchQuery.trim()) return ADDITIONAL_AGENTS;
+    if (!searchQuery.trim()) return SELECTABLE_AGENTS;
     const q = searchQuery.toLowerCase().trim();
-    return ADDITIONAL_AGENTS.filter(
+    return SELECTABLE_AGENTS.filter(
       (a) =>
         a.displayName.toLowerCase().includes(q) ||
         a.id.toLowerCase().includes(q) ||
@@ -516,9 +542,10 @@ import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
 import { errorMessage } from '../engine/doctor.js';
+import { runMcpConfig, runMcpInstall } from './mcp.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.4.0')
+  const program = new Command().name('testweave').version('0.5.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -554,11 +581,21 @@ export function createProgram(): Command {
     .option('--context <file>', 'Workspace-relative context file to send to the provider')
     .option('--module <id>', 'Existing module to update in the AI draft')
     .action(async (options: unknown) => { await runGenerate(await context(), options); });
-  program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
+  const mcp = program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
     .action(async () => {
       const { serveMcp } = await import('../mcp/server.js');
       await serveMcp(await context());
     });
+  mcp.command('config').description('Print an MCP entry for any client, including Codex')
+    .option('--provider <provider>', 'Verified client ID, such as codex, opencode or gemini-cli')
+    .option('--format <format>', 'json or toml (defaults to the provider format)')
+    .option('--key <key>', 'JSON server map key (default: mcpServers)')
+    .action(async (options: unknown) => { await runMcpConfig(await context(), options); });
+  mcp.command('install').description('Register MCP for a verified provider or a custom workspace JSON/JSONC config')
+    .option('--provider <provider>', 'Verified client ID, such as codex, opencode or gemini-cli')
+    .option('--config <file>', 'Workspace-relative custom client configuration file')
+    .option('--key <key>', 'Custom server map key (default: mcpServers)')
+    .action(async (options: unknown) => { await runMcpInstall(await context(), options); });
   return program;
 }
 export async function main(argv = process.argv): Promise<void> {
@@ -636,12 +673,57 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   await saveConfig(context.root, config);
 
   const mcpFiles = [...new Set(config.integrations.flatMap((integration) => {
-    const target = mcpTarget(integration);
+    const target = mcpTarget(integration, context.root);
     return target ? [target.file] : [];
   }))];
   if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);
   context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
+}
+````
+
+````src/cli/mcp.ts
+import { z } from 'zod';
+import type { CliContext } from './context.js';
+import { installMcpServer, mcpProviderConfig, mcpTarget, type McpTarget } from '../integrations/mcp.js';
+import { tomlServerEntry } from '../integrations/mcp-toml.js';
+
+const keySchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/)
+  .refine((key) => !['__proto__', 'constructor', 'prototype'].includes(key), 'Reserved config key');
+
+function providerTarget(root: string, provider: string): McpTarget {
+  const target = mcpTarget(provider, root);
+  if (!target) throw new Error(`No verified project MCP registration for ${provider}; use mcp config for manual configuration`);
+  return target;
+}
+
+export async function runMcpConfig(context: CliContext, options: unknown): Promise<void> {
+  const { format, key, provider } = z.object({
+    format: z.enum(['json', 'toml']).optional(),
+    key: keySchema.optional(),
+    provider: z.string().min(1).optional(),
+  }).parse(options);
+  if (provider && key) throw new Error('Use either --provider or --key');
+  const target = provider ? providerTarget(context.root, provider) : { file: '', key: key ?? 'mcpServers' };
+  const outputFormat = format ?? target.format ?? 'json';
+  if (provider && outputFormat !== (target.format ?? 'json')) throw new Error(`Use ${target.format ?? 'json'} output for ${provider}`);
+  const server = mcpProviderConfig(context.root, target);
+  context.output.log(outputFormat === 'toml'
+    ? tomlServerEntry(server, target.arrayTable).trimEnd()
+    : JSON.stringify({ [target.key]: { testweave: mcpProviderConfig(context.root, target) } }, null, 2));
+}
+
+export async function runMcpInstall(context: CliContext, options: unknown): Promise<void> {
+  const { config, key, provider } = z.object({
+    config: z.string().min(1).optional(),
+    key: keySchema.optional(),
+    provider: z.string().min(1).optional(),
+  }).parse(options);
+  if (provider && (config || key)) throw new Error('Use either --provider or --config/--key');
+  if (!provider && !config) throw new Error('Specify --provider or --config');
+  const target = provider ? providerTarget(context.root, provider) : { file: config!, key: key ?? 'mcpServers' };
+  await installMcpServer(context.root, target);
+  context.output.log(`Configured TestWeave MCP in ${target.file}`);
 }
 ````
 
@@ -1243,6 +1325,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, readOptional } from '../engine/files.js';
+import { MCP_INTEGRATIONS, mcpTarget } from './mcp.js';
 
 export const integrationSchema = z.string().min(1);
 export type IdeIntegration = string;
@@ -1263,6 +1346,11 @@ export function detectIntegrations(root: string): DetectedIntegrations {
   if (exists('.windsurfrules') || exists('.windsurf')) detectedIdes.push('windsurf');
   if (exists('.aider-desk')) detectedIdes.push('aider-desk');
   if (exists('.agents/skills')) detectedIdes.push('universal');
+  for (const id of MCP_INTEGRATIONS) {
+    const target = mcpTarget(id, root)!;
+    if (target.file === '.mcp.json' || detectedIdes.includes(id)) continue;
+    if (exists(target.file.split('/')[0]!)) detectedIdes.push(id);
+  }
 
   return {
     git: exists('.git'),
@@ -1472,7 +1560,7 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
       if (integration === 'vscode' && !text) text = '---\napplyTo: "**"\n---\n\n';
       await atomicWrite(file, injectRules(text));
     }
-    const target = mcpTarget(integration);
+    const target = mcpTarget(integration, root);
     if (target) await installMcpServer(root, target);
     const skillsDir = getSkillsDirForAgent(integration);
     if (skillsDir && skillsDir !== '.vscode') {
@@ -1482,7 +1570,7 @@ export async function installIdeRules(root: string, integrations: IdeIntegration
 }
 
 export async function hasIdeRules(root: string, integration: IdeIntegration): Promise<boolean> {
-  const target = mcpTarget(integration);
+  const target = mcpTarget(integration, root);
   if (target && !await hasMcpServer(root, target)) return false;
   const ruleFile = IDE_FILES[integration];
   if (ruleFile) {
@@ -1499,28 +1587,141 @@ export async function hasIdeRules(root: string, integration: IdeIntegration): Pr
 }
 ````
 
+````src/integrations/mcp-toml.ts
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
+import { z } from 'zod';
+
+export function parseMcpToml(text: string, file: string, arrayTable = false) {
+  try {
+    const ast = parseTOML(text);
+    const server = z.record(z.string(), z.unknown());
+    const data = z.object({ mcp_servers: (arrayTable ? z.array(server) : server).optional() })
+      .passthrough().parse(getStaticTOMLValue(ast));
+    if (Array.isArray(data.mcp_servers) && data.mcp_servers.filter((entry) => entry.name === 'testweave').length > 1) {
+      throw new Error('Duplicate TestWeave MCP servers');
+    }
+    return { ast, data };
+  } catch {
+    throw new Error(`Invalid ${file}; repair TOML syntax and the mcp_servers table before installing TestWeave`);
+  }
+}
+
+export function tomlServerEntry(server: Record<string, unknown>, arrayTable = false): string {
+  const header = arrayTable ? '[[mcp_servers]]' : '[mcp_servers.testweave]';
+  return `${header}\n${Object.entries(server).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join('\n')}\n`;
+}
+
+export function mergeMcpToml(text: string, file: string, server: Record<string, unknown>, arrayTable = false): string {
+  const { ast, data } = parseMcpToml(text, file, arrayTable);
+  const servers = data.mcp_servers;
+  const index = Array.isArray(servers) ? servers.findIndex((entry) => entry.name === 'testweave') : -1;
+  const table = ast.body[0].body.find((node) => node.type === 'TOMLTable'
+    && node.kind === (arrayTable ? 'array' : 'standard')
+    && JSON.stringify(node.resolvedKey) === JSON.stringify(['mcp_servers', arrayTable ? index : 'testweave']));
+  if (!table || table.type !== 'TOMLTable') {
+    if (Array.isArray(servers) ? index !== -1 : servers?.testweave !== undefined) {
+      throw new Error(`Cannot update ${file}; express TestWeave as a ${arrayTable ? '[[mcp_servers]]' : '[mcp_servers.testweave]'} table first`);
+    }
+    const output = `${text}${text && !text.endsWith('\n') ? '\n' : ''}\n${tomlServerEntry(server, arrayTable)}`;
+    parseMcpToml(output, file, arrayTable);
+    return output;
+  }
+
+  const edits: { start: number; end: number; value: string }[] = [];
+  for (const entry of table.body) {
+    if (JSON.stringify(getStaticTOMLValue(entry.key)) === JSON.stringify(['url'])) {
+      edits.push({ start: entry.range[0], end: entry.range[1], value: '' });
+    }
+  }
+  const missing: string[] = [];
+  for (const [key, value] of Object.entries(server)) {
+    const entry = table.body.find((node) => JSON.stringify(getStaticTOMLValue(node.key)) === JSON.stringify([key]));
+    if (entry) edits.push({ start: entry.value.range[0], end: entry.value.range[1], value: JSON.stringify(value) });
+    else missing.push(`${key} = ${JSON.stringify(value)}\n`);
+  }
+  if (missing.length) {
+    const newline = text.indexOf('\n', table.key.range[1]);
+    const start = newline === -1 ? text.length : newline + 1;
+    edits.push({ start, end: start, value: `${newline === -1 ? '\n' : ''}${missing.join('')}` });
+  }
+  let output = text;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    output = output.slice(0, edit.start) + edit.value + output.slice(edit.end);
+  }
+  parseMcpToml(output, file, arrayTable);
+  return output;
+}
+````
+
 ````src/integrations/mcp.ts
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
 import { z } from 'zod';
 import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
 import { runtimeLaunch } from './runtime.js';
+import { mergeMcpToml, parseMcpToml } from './mcp-toml.js';
 
-export interface McpTarget { file: string; key: 'mcpServers' | 'servers'; type?: 'stdio' }
+export interface McpTarget {
+  file: string;
+  key: string;
+  type?: 'stdio';
+  format?: 'toml';
+  arrayTable?: boolean;
+  commandArray?: boolean;
+  alternatives?: string[];
+}
 const targets: Record<string, McpTarget> = {
   cursor: { file: '.cursor/mcp.json', key: 'mcpServers' },
   claude: { file: '.mcp.json', key: 'mcpServers' },
   'claude-code': { file: '.mcp.json', key: 'mcpServers' },
   vscode: { file: '.vscode/mcp.json', key: 'servers', type: 'stdio' },
+  amp: { file: '.amp/settings.json', key: 'amp.mcpServers' },
+  bob: { file: '.bob/mcp.json', key: 'mcpServers' },
+  deepagents: { file: '.mcp.json', key: 'mcpServers' },
+  firebender: { file: 'firebender.json', key: 'mcpServers', type: 'stdio' },
+  'command-code': { file: '.mcp.json', key: 'mcpServers' },
+  forgecode: { file: '.mcp.json', key: 'mcpServers' },
+  'posit-assistant': { file: '.posit/assistant/settings.json', key: 'mcpServers', commandArray: true },
+  codex: { file: '.codex/config.toml', key: 'mcp_servers', format: 'toml' },
+  grok: { file: '.grok/config.toml', key: 'mcp_servers', format: 'toml' },
+  'mistral-vibe': { file: '.vibe/config.toml', key: 'mcp_servers', format: 'toml', arrayTable: true },
+  pochi: { file: '.pochi/config.jsonc', key: 'mcp' },
+  continue: { file: '.continue/mcpServers/testweave.json', key: 'mcpServers' },
+  'gemini-cli': { file: '.gemini/settings.json', key: 'mcpServers' },
+  'github-copilot': { file: '.mcp.json', key: 'mcpServers' },
+  'qwen-code': { file: '.qwen/settings.json', key: 'mcpServers' },
+  'kimi-code-cli': { file: '.kimi-code/mcp.json', key: 'mcpServers' },
+  'kiro-cli': { file: '.kiro/settings/mcp.json', key: 'mcpServers' },
+  roo: { file: '.roo/mcp.json', key: 'mcpServers' },
+  droid: { file: '.factory/mcp.json', key: 'mcpServers', type: 'stdio' },
+  qoder: { file: '.qoder/settings.json', key: 'mcpServers' },
+  junie: { file: '.junie/mcp/mcp.json', key: 'mcpServers' },
+  opencode: { file: 'opencode.json', key: 'mcp', commandArray: true, alternatives: ['opencode.jsonc'] },
+  kilo: { file: '.kilo/kilo.jsonc', key: 'mcp', commandArray: true, alternatives: ['kilo.jsonc', 'kilo.json', '.kilo/kilo.json'] },
 };
 
-export function mcpTarget(integration: string): McpTarget | undefined {
-  return Object.hasOwn(targets, integration) ? targets[integration] : undefined;
+export const MCP_INTEGRATIONS = Object.keys(targets);
+
+export function mcpTarget(integration: string, root?: string): McpTarget | undefined {
+  if (!Object.hasOwn(targets, integration)) return undefined;
+  const target = targets[integration]!;
+  const file = root && [...target.alternatives ?? [], target.file].find((file) => existsSync(path.join(root, file)));
+  return file ? { ...target, file } : target;
 }
 
 export function mcpServerConfig(root: string, target: McpTarget): { type?: 'stdio'; command: string; args: string[] } {
   const launch = runtimeLaunch(fileURLToPath(new URL('../cli/index.js', import.meta.url)));
   return { ...(target.type ? { type: target.type } : {}), command: launch.command, args: [...launch.args, '--cwd', root, 'mcp'] };
+}
+
+export function mcpProviderConfig(root: string, target: McpTarget) {
+  const server = mcpServerConfig(root, target);
+  if (target.arrayTable) return { name: 'testweave', transport: 'stdio' as const, ...server };
+  return target.commandArray
+    ? { type: 'local' as const, command: [server.command, ...server.args], enabled: true }
+    : server;
 }
 
 function parseConfig(text: string, target: McpTarget): Record<string, unknown> {
@@ -1534,9 +1735,15 @@ function parseConfig(text: string, target: McpTarget): Record<string, unknown> {
 
 export async function installMcpServer(root: string, target: McpTarget): Promise<void> {
   const file = await workspacePath(root, target.file);
+  if (target.format === 'toml') {
+    const text = await readOptional(file) ?? '';
+    const output = mergeMcpToml(text, target.file, mcpProviderConfig(root, target), target.arrayTable);
+    if (output !== text) await atomicWrite(file, output);
+    return;
+  }
   const text = await readOptional(file) ?? '{}\n';
   parseConfig(text, target);
-  const output = applyEdits(text, modify(text, [target.key, 'testweave'], mcpServerConfig(root, target), {
+  const output = applyEdits(text, modify(text, [target.key, 'testweave'], mcpProviderConfig(root, target), {
     formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' },
   }));
   if (output !== text) await atomicWrite(file, output);
@@ -1545,9 +1752,18 @@ export async function installMcpServer(root: string, target: McpTarget): Promise
 export async function hasMcpServer(root: string, target: McpTarget): Promise<boolean> {
   const text = await readOptional(await workspacePath(root, target.file));
   if (text === undefined) return false;
-  const servers = parseConfig(text, target)[target.key] as Record<string, unknown> | undefined;
-  const server = z.object({ type: z.literal('stdio').optional(), command: z.string(), args: z.array(z.string()) }).safeParse(servers?.testweave);
-  return server.success && JSON.stringify(server.data) === JSON.stringify(mcpServerConfig(root, target));
+  const servers = target.format === 'toml'
+    ? parseMcpToml(text, target.file, target.arrayTable).data.mcp_servers
+    : parseConfig(text, target)[target.key] as Record<string, unknown> | undefined;
+  const entry = Array.isArray(servers) ? servers.find((entry) => entry.name === 'testweave') : servers?.testweave;
+  if (entry && typeof entry === 'object' && 'url' in entry) return false;
+  const schema = target.arrayTable
+    ? z.object({ name: z.literal('testweave'), transport: z.literal('stdio'), command: z.string(), args: z.array(z.string()) })
+    : target.commandArray
+    ? z.object({ type: z.literal('local'), command: z.array(z.string()), enabled: z.literal(true) })
+    : z.object({ type: z.literal('stdio').optional(), command: z.string(), args: z.array(z.string()) });
+  const server = schema.safeParse(entry);
+  return server.success && JSON.stringify(server.data) === JSON.stringify(mcpProviderConfig(root, target));
 }
 ````
 
@@ -2159,7 +2375,7 @@ async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.4.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.5.0' });
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',
@@ -3063,7 +3279,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { parse } from 'jsonc-parser';
 import { installIdeRules, hasIdeRules } from '../src/integrations/ide.js';
-import { installMcpServer, mcpServerConfig, mcpTarget } from '../src/integrations/mcp.js';
+import { installMcpServer, mcpServerConfig, mcpProviderConfig, mcpTarget, hasMcpServer, MCP_INTEGRATIONS } from '../src/integrations/mcp.js';
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { runInit } from '../src/cli/init.js';
 import { runUpdate } from '../src/cli/update.js';
 import { diagnose, repair } from '../src/engine/doctor.js';
@@ -3071,8 +3288,50 @@ import { repositoryFixture, temporaryDirectory } from './helpers.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { runMcpConfig, runMcpInstall } from '../src/cli/mcp.js';
+import { detectIntegrations } from '../src/integrations/config.js';
+import { SELECTABLE_AGENTS } from '../src/cli/agent-selector.js';
 
-for (const integration of ['cursor', 'claude', 'claude-code', 'vscode']) {
+test('custom client injection preserves JSONC and validates config and workspace paths', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const file = path.join(context.root, 'custom-client.json');
+  await writeFile(file, '{\n // Preserve custom client\n "customServers": { "other": { "command": "keep" }, },\n}\n');
+  await runMcpInstall(context, { config: 'custom-client.json', key: 'customServers' });
+  const first = await readFile(file, 'utf8');
+  assert.match(first, /Preserve custom client/);
+  assert.equal(parse(first).customServers.other.command, 'keep');
+  assert.deepEqual(parse(first).customServers.testweave, mcpServerConfig(context.root, { file: '', key: 'customServers' }));
+  await runMcpInstall(context, { config: 'custom-client.json', key: 'customServers' });
+  assert.equal(await readFile(file, 'utf8'), first);
+  await assert.rejects(runMcpInstall(context, { config: '../outside.json' }), /inside the workspace/);
+  await assert.rejects(runMcpInstall(context, { config: 'custom-client.json', key: '__proto__' }), /Reserved/);
+  await writeFile(file, '{"customServers": []}');
+  await assert.rejects(runMcpInstall(context, { config: 'custom-client.json', key: 'customServers' }), /Invalid/);
+  assert.equal(await readFile(file, 'utf8'), '{"customServers": []}');
+});
+
+test('compiled CLI exports generic JSON and Codex TOML and injects custom configs', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const cli = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+  const exec = promisify(execFile);
+  const { stdout } = await exec(process.execPath, [cli, '--cwd', context.root, 'mcp', 'config']);
+  const server = JSON.parse(stdout).mcpServers.testweave;
+  await exec(process.execPath, [cli, '--cwd', context.root, 'mcp', 'install', '--config', '.custom/mcp.json', '--key', 'servers']);
+  assert.deepEqual(JSON.parse(await readFile(path.join(context.root, '.custom/mcp.json'), 'utf8')).servers.testweave, server);
+  const toml = await exec(process.execPath, [cli, '--cwd', context.root, 'mcp', 'config', '--format', 'toml']);
+  assert.equal(toml.stdout, `[mcp_servers.testweave]\ncommand = ${JSON.stringify(server.command)}\nargs = ${JSON.stringify(server.args)}\n`);
+  await assert.rejects(runMcpConfig(context, { format: 'yaml' }));
+  const client = new Client({ name: 'custom-client-test', version: '1.0.0' });
+  try {
+    await client.connect(new StdioClientTransport({ ...server, stderr: 'pipe' }));
+    assert.equal((await client.listTools()).tools.length, 3);
+    const result = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'xray', format: 'csv' } });
+    assert.notEqual(result.isError, true);
+    assert.equal((await client.listResources()).resources.length, 1);
+  } finally { await client.close(); }
+});
+
+for (const integration of MCP_INTEGRATIONS.filter((id) => mcpTarget(id)!.format !== 'toml')) {
   test(`${integration} setup preserves MCP settings and is idempotent`, async (t) => {
     const root = await temporaryDirectory(t);
     const target = mcpTarget(integration)!;
@@ -3084,7 +3343,7 @@ for (const integration of ['cursor', 'claude', 'claude-code', 'vscode']) {
     assert.match(first, /Team configuration/);
     assert.deepEqual(parse(first).settings, { keep: true });
     assert.deepEqual(parse(first)[target.key].other, { command: 'team-tool' });
-    assert.deepEqual(parse(first)[target.key].testweave, mcpServerConfig(root, target));
+    assert.deepEqual(parse(first)[target.key].testweave, mcpProviderConfig(root, target));
     assert.equal(await hasIdeRules(root, integration), true);
     await installIdeRules(root, [integration]);
     assert.equal(await readFile(file, 'utf8'), first);
@@ -3149,6 +3408,136 @@ test('MCP installation refuses paths resolving outside the project', async (t) =
   await symlink(outside, path.join(root, '.cursor'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(installMcpServer(root, mcpTarget('cursor')!), /outside the workspace/);
   await assert.rejects(readFile(path.join(outside, 'mcp.json')), { code: 'ENOENT' });
+});
+
+test('Codex TOML installation preserves comments, other servers and multiline values', async (t) => {
+  const root = await temporaryDirectory(t);
+  const target = mcpTarget('codex')!;
+  const file = path.join(root, target.file);
+  await installIdeRules(root, ['codex']);
+  assert.equal(await hasIdeRules(root, 'codex'), true);
+  const initial = await readFile(file, 'utf8');
+  await installIdeRules(root, ['codex']);
+  assert.equal(await readFile(file, 'utf8'), initial);
+  const original = '# Keep team settings\nmodel = "team-model"\n[mcp_servers.other]\ncommand = "keep"\n[mcp_servers."testweave"] # Keep header\ncommand = "old" # Keep launch comment\nargs = [\n  "old-arg",\n]\nstartup_timeout_sec = 30\n[mcp_servers.testweave.env]\nTEAM = "keep"\n';
+  await writeFile(file, original);
+  assert.equal(await hasMcpServer(root, target), false);
+  await installMcpServer(root, target);
+  const first = await readFile(file, 'utf8');
+  assert.match(first, /# Keep team settings/);
+  assert.match(first, /# Keep header/);
+  assert.match(first, /# Keep launch comment/);
+  const values = getStaticTOMLValue(parseTOML(first));
+  assert.equal(values.model, 'team-model');
+  assert.deepEqual(values.mcp_servers, {
+    other: { command: 'keep' },
+    testweave: { ...mcpServerConfig(root, target), startup_timeout_sec: 30, env: { TEAM: 'keep' } },
+  });
+  assert.equal(await hasMcpServer(root, target), true);
+  await installMcpServer(root, target);
+  assert.equal(await readFile(file, 'utf8'), first);
+  await writeFile(file, '[mcp_servers.testweave]');
+  await installMcpServer(root, target);
+  assert.equal(await hasMcpServer(root, target), true);
+  for (const invalid of ['[broken', 'mcp_servers = []', '[mcp_servers.testweave]\ncommand = "a"\ncommand = "b"']) {
+    await writeFile(file, invalid);
+    await assert.rejects(installMcpServer(root, target), /Invalid/);
+    assert.equal(await readFile(file, 'utf8'), invalid);
+  }
+  const inline = 'mcp_servers = { testweave = { command = "keep" } }';
+  await writeFile(file, inline);
+  await assert.rejects(installMcpServer(root, target), /express TestWeave as/);
+  assert.equal(await readFile(file, 'utf8'), inline);
+  await writeFile(file, '[mcp_servers.testweave]\nurl = "https://old.example/mcp" # Keep comment\n');
+  await installMcpServer(root, target);
+  const local = await readFile(file, 'utf8');
+  assert.match(local, /# Keep comment/);
+  assert.deepEqual(getStaticTOMLValue(parseTOML(local)).mcp_servers, { testweave: mcpServerConfig(root, target) });
+  assert.equal(await hasMcpServer(root, target), true);
+});
+
+test('provider CLI exports native formats and selects existing configuration files', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const cli = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+  const exec = promisify(execFile);
+  const base = [cli, '--cwd', context.root, 'mcp'];
+  await writeFile(path.join(context.root, 'opencode.jsonc'), '{ // Keep project\n "model": "team/model" }');
+  await exec(process.execPath, [...base, 'install', '--provider', 'opencode']);
+  const opencode = parse(await readFile(path.join(context.root, 'opencode.jsonc'), 'utf8'));
+  assert.equal(opencode.model, 'team/model');
+  assert.equal(opencode.mcp.testweave.type, 'local');
+  assert.equal(opencode.mcp.testweave.enabled, true);
+  assert.ok(Array.isArray(opencode.mcp.testweave.command));
+  assert.equal(opencode.mcp.testweave.args, undefined);
+  await assert.rejects(readFile(path.join(context.root, 'opencode.json')), { code: 'ENOENT' });
+  const json = await exec(process.execPath, [...base, 'config', '--provider', 'opencode']);
+  assert.deepEqual(JSON.parse(json.stdout).mcp.testweave, opencode.mcp.testweave);
+  await exec(process.execPath, [...base, 'install', '--provider', 'codex']);
+  const toml = await exec(process.execPath, [...base, 'config', '--provider', 'codex']);
+  assert.deepEqual(getStaticTOMLValue(parseTOML(toml.stdout)), getStaticTOMLValue(parseTOML(await readFile(path.join(context.root, '.codex/config.toml'), 'utf8'))));
+  await mkdir(path.join(context.root, '.kilo'), { recursive: true });
+  await writeFile(path.join(context.root, 'kilo.json'), '{}');
+  await writeFile(path.join(context.root, '.kilo/kilo.jsonc'), '{}');
+  assert.equal(mcpTarget('kilo', context.root)!.file, 'kilo.json');
+  for (const options of [{}, { provider: 'universal' }, { provider: 'codex', config: 'custom.json' }, { provider: 'codex', key: 'servers' }]) {
+    await assert.rejects(runMcpInstall(context, options));
+  }
+  await assert.rejects(runMcpConfig(context, { provider: 'opencode', format: 'toml' }));
+});
+
+test('clients sharing .mcp.json remain healthy when selected together', async (t) => {
+  const root = await temporaryDirectory(t);
+  const clients = ['claude-code', 'github-copilot', 'deepagents', 'command-code', 'forgecode'];
+  await installIdeRules(root, clients);
+  for (const client of clients) assert.equal(await hasIdeRules(root, client), true);
+});
+
+test('doctor repairs newly supported JSON, TOML and command-array clients', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const integrations = ['amp', 'codex', 'gemini-cli', 'opencode'];
+  await writeFile(path.join(context.root, '.testweave.json'), JSON.stringify({ version: 1, integrations, hook: false }));
+  await runInit(context, { yes: true });
+  for (const integration of integrations) await rm(path.join(context.root, mcpTarget(integration, context.root)!.file));
+  const checks = await diagnose(context);
+  for (const integration of integrations) assert.equal(checks.find((check) => check.id === `ide:${integration}`)?.repairable, true);
+  assert.ok((await repair(context, checks)).every((check) => check.ok));
+});
+
+test('Mistral array tables preserve other servers and reject duplicate TestWeave names', async (t) => {
+  const root = await temporaryDirectory(t);
+  const target = mcpTarget('mistral-vibe')!;
+  const file = path.join(root, target.file);
+  await installIdeRules(root, ['mistral-vibe']);
+  assert.equal(await hasIdeRules(root, 'mistral-vibe'), true);
+  const original = '# Keep Vibe settings\nactive_model = "team-model"\n[[mcp_servers]]\nname = "other"\ncommand = "keep"\n[[mcp_servers]] # Keep TestWeave comment\nname = "testweave"\ntransport = "stdio"\ncommand = "old"\nargs = ["old"]\n';
+  await writeFile(file, original);
+  await installMcpServer(root, target);
+  const first = await readFile(file, 'utf8');
+  const values = getStaticTOMLValue(parseTOML(first));
+  assert.equal(values.active_model, 'team-model');
+  assert.deepEqual(values.mcp_servers, [{ name: 'other', command: 'keep' }, mcpProviderConfig(root, target)]);
+  assert.match(first, /# Keep TestWeave comment/);
+  assert.equal(await hasMcpServer(root, target), true);
+  await installMcpServer(root, target);
+  assert.equal(await readFile(file, 'utf8'), first);
+  for (const invalid of ['mcp_servers = {}', '[[mcp_servers]]\nname = "testweave"\n[[mcp_servers]]\nname = "testweave"']) {
+    await writeFile(file, invalid);
+    await assert.rejects(installMcpServer(root, target), /Invalid/);
+    assert.equal(await readFile(file, 'utf8'), invalid);
+  }
+  await runMcpInstall((await repositoryFixture(t)).context, { provider: 'grok' });
+});
+
+test('native MCP clients are selectable and detected without expanding universal skills', async (t) => {
+  const root = await temporaryDirectory(t);
+  for (const id of ['amp', 'codex', 'gemini-cli', 'opencode']) {
+    assert.ok(SELECTABLE_AGENTS.some((agent) => agent.id === id));
+  }
+  for (const directory of ['.codex', '.gemini', '.vibe']) await mkdir(path.join(root, directory));
+  await writeFile(path.join(root, 'opencode.jsonc'), '{}');
+  const detected = detectIntegrations(root).ides;
+  for (const id of ['codex', 'gemini-cli', 'mistral-vibe', 'opencode']) assert.ok(detected.includes(id));
+  assert.equal(mcpTarget('universal'), undefined);
 });
 ````
 
