@@ -1,6 +1,6 @@
 {
   "name": "testweave",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",

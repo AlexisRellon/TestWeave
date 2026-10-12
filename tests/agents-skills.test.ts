@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -15,6 +15,7 @@ import {
 import {
   TESTWEAVE_SKILL_NAME,
   TESTWEAVE_SKILL_CONTENT,
+  TESTWEAVE_SKILL_FILES,
   TESTWEAVE_REFERENCE_NAME,
   TESTWEAVE_REFERENCE_CONTENT,
   installSkill,
@@ -57,39 +58,93 @@ test('agent directory defines 79 agents split into universal and additional', ()
   assert.equal(getSkillsDirForAgent('aider-desk'), '.aider-desk/skills');
 });
 
-test('TestWeave custom skill installs and validates SKILL.md and reference.md format', async (t) => {
+test('skill bundle installs authoritative documents with resolvable local links', async (t) => {
   const root = await temporaryDirectory(t);
   assert.equal(TESTWEAVE_SKILL_NAME, 'testweave');
-  assert.equal(TESTWEAVE_REFERENCE_NAME, 'reference.md');
-  assert.match(TESTWEAVE_SKILL_CONTENT, /name: testweave/);
-  assert.match(TESTWEAVE_SKILL_CONTENT, /# TestWeave QA Contract Skill/);
-  assert.match(TESTWEAVE_SKILL_CONTENT, /reference\.md/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Functional Testing/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /GeeksforGeeks/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Boundary Value Analysis/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Equivalence Class Partitioning/);
-
+  assert.equal(TESTWEAVE_REFERENCE_NAME, 'references/functional-testing.md');
   assert.equal(await hasSkill(root, '.agents/skills'), false);
   const installedFile = await installSkill(root, '.agents/skills');
+  const installedRoot = path.dirname(installedFile);
   assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(installedFile, 'utf8'), TESTWEAVE_SKILL_CONTENT);
+  assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
+  assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
+    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/init.md', 'commands/mcp.md',
+    'commands/scan.md', 'commands/sync.md', 'commands/update.md',
+    'references/contract-schema.md', 'references/functional-testing.md',
+  ]);
+  assert.match(TESTWEAVE_SKILL_CONTENT, /^---\nname: testweave\ndescription: [^\n]+\n---\n/);
+  for (const entry of TESTWEAVE_SKILL_FILES) {
+    const installed = path.join(installedRoot, entry.path);
+    assert.equal(await readFile(installed, 'utf8'), await readFile(new URL('../skills/testweave/' + entry.path, import.meta.url), 'utf8'));
+    for (const link of entry.content.matchAll(/\]\(([^)]+\.md)\)/g)) {
+      const target = path.resolve(path.dirname(installed), link[1]!);
+      const relative = path.relative(installedRoot, target);
+      assert.ok(!relative.startsWith('..') && !path.isAbsolute(relative), 'Link escapes installed bundle: ' + link[1]);
+      await readFile(target, 'utf8');
+    }
+  }
+});
 
-  const content = await readFile(installedFile, 'utf8');
-  assert.match(content, /description: Keep manual QA contracts aligned/);
-  assert.match(content, /get_contract/);
-  assert.match(content, /upsert_test_module/);
-  assert.match(content, /testweave sync/);
+test('skill refresh restores missing and modified documents while retaining user files', async (t) => {
+  const root = await temporaryDirectory(t);
+  const installed = path.dirname(await installSkill(root, '.agents/skills'));
+  const custom = path.join(installed, 'notes.md');
+  await writeFile(custom, 'Team-specific notes');
+  const removed = path.join(installed, 'commands/scan.md');
+  await unlink(removed);
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+  await installSkill(root, '.agents/skills');
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  await writeFile(path.join(installed, 'references/contract-schema.md'), 'Old schema');
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+  await installSkill(root, '.agents/skills');
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(custom, 'utf8'), 'Team-specific notes');
+});
 
-  const refFile = path.join(path.dirname(installedFile), 'reference.md');
-  const refContent = await readFile(refFile, 'utf8');
-  assert.match(refContent, /Unit Testing/);
-  assert.match(refContent, /Regression Testing/);
-  assert.match(refContent, /Integration Testing/);
-  assert.match(refContent, /Smoke Testing/);
-  assert.match(refContent, /System Testing/);
-  assert.match(refContent, /Sanity Testing/);
-  assert.match(refContent, /User Acceptance Testing \(UAT\)/);
-  assert.match(refContent, /UI Testing/);
-  assert.match(refContent, /API Testing/);
+test('skill installation rejects linked resource directories before writing bundle files', async (t) => {
+  const root = await temporaryDirectory(t);
+  const outside = await temporaryDirectory(t);
+  const installed = path.join(root, '.agents/skills/testweave');
+  await mkdir(installed, { recursive: true });
+  const outsideFile = path.join(outside, 'scan.md');
+  await writeFile(outsideFile, 'Outside document');
+  try { await symlink(outside, path.join(installed, 'commands'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) { t.skip('Symlink permission unavailable'); return; }
+    throw error;
+  }
+  await assert.rejects(installSkill(root, '.agents/skills'), /outside the workspace/);
+  assert.equal(await readFile(outsideFile, 'utf8'), 'Outside document');
+  await assert.rejects(readFile(path.join(installed, 'SKILL.md')), { code: 'ENOENT' });
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+});
+
+test('doctor detects damaged nested skills alongside intact IDE rules and repairs the full bundle', async (t) => {
+  const root = await temporaryDirectory(t);
+  await exec(process.execPath, [cliPath, '--cwd', root, 'setup', '--yes', '--no-hook']);
+  const baseline = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  const claude = path.join(root, '.claude/skills/testweave');
+  const universal = path.join(root, '.agents/skills/testweave');
+  await unlink(path.join(claude, 'commands/scan.md'));
+  await writeFile(path.join(universal, 'references/contract-schema.md'), 'Stale schema');
+  await writeFile(path.join(claude, 'notes.md'), 'Keep team notes');
+  assert.equal(await hasSkill(root, '.claude/skills'), false);
+  const failing = await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--json']).catch((error: { code: number; stdout: string }) => {
+    assert.equal(error.code, 1);
+    return { stdout: error.stdout };
+  });
+  const diagnostics = JSON.parse(failing.stdout) as { id: string; ok: boolean }[];
+  assert.ok(diagnostics.some((check) => check.id === 'ide:claude' && !check.ok));
+  assert.ok(diagnostics.some((check) => check.id === 'ide:universal' && !check.ok));
+  await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--fix']);
+  const repaired = await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--json']);
+  assert.ok((JSON.parse(repaired.stdout) as { ok: boolean }[]).every((check) => check.ok));
+  assert.equal(await hasSkill(root, '.claude/skills'), true);
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), baseline);
+  assert.equal(await readFile(path.join(claude, 'notes.md'), 'utf8'), 'Keep team notes');
 });
 
 test('installIdeRules installs custom skill and agent rules across multiple agent targets', async (t) => {
@@ -157,7 +212,8 @@ test('compiled CLI supports update command to refresh rules and skills', async (
   const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
   const skillContent = await readFile(skillFile, 'utf8');
   assert.match(skillContent, /name: testweave/);
-  assert.match(skillContent, /testweave update/);
+  assert.match(skillContent, /commands\/update\.md/);
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
 
   const freshRoot = await temporaryDirectory(t);
   const freshUpdate = await exec(process.execPath, [cliPath, '--cwd', freshRoot, 'update', '--yes']);

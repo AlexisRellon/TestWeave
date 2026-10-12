@@ -8,7 +8,9 @@ export const RULE_START = '<!-- testweave:start -->';
 export const RULE_END = '<!-- testweave:end -->';
 export const QA_RULES = `${RULE_START}
 ## TestWeave QA contract
+- Read available project context (project-context.md, README, AGENTS.md, architecture and requirements docs) before planning tests or changing source behavior.
 - Read test-truth.md before changing source behavior.
+- For existing projects, run testweave scan to discover modules, journeys and automated tests; review drafts before adopting them.
 - Every changed source file must match a registered module's paths.
 - Update that module's manual test actions and expected results alongside code changes.
 - Include success, failure, and boundary scenarios. Keep test IDs stable and globally unique.
@@ -61,7 +63,6 @@ export async function hasIdeRules(root: string, integration: IdeIntegration): Pr
     const text = await readOptional(await workspacePath(root, ruleFile));
     const rulesOk = text !== undefined && text.includes(QA_RULES) && injectRules(text) === text;
     if (!rulesOk) return false;
-    return true;
   }
   const skillsDir = getSkillsDirForAgent(integration);
   if (skillsDir && skillsDir !== '.vscode') {

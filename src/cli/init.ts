@@ -56,6 +56,6 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   }))];
   if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);
   context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
-  context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
+  context.output.log('For an existing project, run testweave scan, then testweave scan --apply to add reviewable module drafts. Review project context and scenarios before committing test-truth.md with your code.');
 }
 
