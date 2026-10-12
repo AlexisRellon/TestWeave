@@ -1,6 +1,6 @@
 # TestWeave QA Reference: Functional Testing & Living Test Contracts
 
-This reference documents functional testing principles, taxonomies, test design techniques, and TestWeave contract schema specifications for manual and automated QA verification.
+This reference documents functional testing principles, taxonomies, test design techniques, and scenario examples for manual and automated QA verification.
 
 ---
 
@@ -300,10 +300,10 @@ Functional test case design relies on proven techniques to maximize test coverag
 ## 4. TestWeave QA Contract Lifecycle
 
 1. **Analyze Requirements**: Understand what source code is changing and the intended user-facing or technical behavior.
-2. **Review Contract**: Call `get_contract` or read `test-truth.md` to identify existing modules and tests covering the modified files.
+2. **Review Contract**: Read the `living-test-contract` MCP resource or `test-truth.md` to identify existing modules and tests covering the modified files.
 3. **Design Scenarios**: Apply BVA and ECP to define concrete preconditions, test steps (action, data, expected outcome), and test types.
 4. **Implement & Update**: Modify source code and immediately update the module in `test-truth.md` via `upsert_test_module` or direct edit.
-5. **Verify Drift**: Run `testweave sync` (or MCP `check_drift`) to ensure zero drift before committing.
+5. **Verify Drift**: Run `testweave sync` (or MCP `analyze_code_drift`) to ensure zero drift before committing.
 6. **Commit Atomically**: Commit both the source changes and the updated `test-truth.md` in the exact same Git commit.
 
 ---

@@ -4,7 +4,8 @@
     "universal",
     "claude-code",
     "claude",
-    "vscode"
+    "vscode",
+    "opencode"
   ],
   "hook": true
 }

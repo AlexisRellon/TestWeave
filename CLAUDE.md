@@ -1,6 +1,8 @@
 <!-- testweave:start -->
 ## TestWeave QA contract
+- Read available project context (project-context.md, README, AGENTS.md, architecture and requirements docs) before planning tests or changing source behavior.
 - Read test-truth.md before changing source behavior.
+- For existing projects, run testweave scan to discover modules, journeys and automated tests; review drafts before adopting them.
 - Every changed source file must match a registered module's paths.
 - Update that module's manual test actions and expected results alongside code changes.
 - Include success, failure, and boundary scenarios. Keep test IDs stable and globally unique.
