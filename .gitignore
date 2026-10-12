@@ -13,3 +13,7 @@ release-assets/
 .mcp.json
 .codex/config.toml
 .lean-ctx/
+
+.agents/skills/adaptive-bugfix
+.codex/hooks.json
+docs/bug-memory
