@@ -33,6 +33,56 @@ The JSON block below is authoritative. Update affected modules and test steps wi
       ],
       "tests": [
         {
+          "id": "CLI-004",
+          "title": "Doctor presents aligned diagnostics, relevant paths and an accurate check summary",
+          "type": "ui",
+          "priority": "high",
+          "preconditions": [
+            "An initialized workspace or a workspace with failed diagnostics"
+          ],
+          "steps": [
+            {
+              "action": "Run doctor on healthy, damaged and repaired workspaces; compare doctor --json and disable terminal colors",
+              "data": "testweave doctor; testweave doctor --fix; testweave doctor --json; NO_COLOR=1",
+              "expected": "Human output shows a diagnostics heading, aligned named OK/FAIL checks with relevant contract, integration and hook paths, installation version/runtime/workspace/bundle details, disabled-hook information and a passed/total summary. Healthy checks show Everything looks good; failures distinguish automatic from manual repairs. Summary counts diagnostic checks only. JSON remains the existing diagnostic array without presentation metadata, colors or summary text; exit codes remain 0 for healthy and 1 for unresolved checks. --fix reports final repaired results while preserving authored contracts."
+            }
+          ],
+          "tags": [
+            "doctor",
+            "cli",
+            "formatting",
+            "json",
+            "regression"
+          ]
+        },
+        {
+          "id": "CLI-003",
+          "title": "Adopt an existing project through context-first scan preview and apply",
+          "type": "e2e",
+          "priority": "high",
+          "preconditions": [
+            "An existing project with source, project context and automated tests; TestWeave installed"
+          ],
+          "steps": [
+            {
+              "action": "Run scan and scan --json, optionally prioritizing docs/product.md using --context; then run scan --apply twice",
+              "data": "testweave scan; testweave scan --context docs/product.md --json; testweave scan --apply",
+              "expected": "Preview reads available context before implementation files and inventories function/route/test evidence and journey candidates without writing. Apply adds validated needs-review drafts for uncovered tracked files. Repeating the scan adds nothing; authored modules, IDs, policy and surrounding prose remain unchanged."
+            },
+            {
+              "action": "Scan a fresh, empty, partially covered or malformed workspace; select missing or outside context",
+              "data": "Empty modules; existing coverage; invalid test-truth.md; --context missing.md; --context ../private.md",
+              "expected": "Fresh projects can acquire a contract through apply; empty scans do not write. Existing coverage is preserved. Invalid contracts and invalid selected context fail before adoption. Drafts require specific acceptance criteria and never claim test execution."
+            }
+          ],
+          "tags": [
+            "scan",
+            "adoption",
+            "context",
+            "preservation"
+          ]
+        },
+        {
           "id": "CLI-001",
           "title": "Interactive setup with agent selection and custom skill installation",
           "type": "smoke",
@@ -87,6 +137,28 @@ The JSON block below is authoritative. Update affected modules and test steps wi
       ],
       "tests": [
         {
+          "id": "INT-005",
+          "title": "Installed agent rules and skills prioritize project context during adoption",
+          "type": "integration",
+          "priority": "high",
+          "preconditions": [
+            "Built TestWeave package"
+          ],
+          "steps": [
+            {
+              "action": "Install or refresh TestWeave rules and skills, and read the shipped SKILL.md",
+              "data": "testweave setup --yes; testweave update --yes; skills/testweave/SKILL.md",
+              "expected": "The shared SKILL.md entrypoint prioritizes project context and routes agents to focused command and reference documents. Scan guidance describes preview, custom context, JSON and additive apply, with needs-review drafts and no execution claims. Setup installs all routed documents and directs existing projects to scan. Doctor detects missing or stale nested skill documents even when client IDE rules are intact; doctor --fix restores them without changing authored contracts or user files."
+            }
+          ],
+          "tags": [
+            "skills",
+            "rules",
+            "context",
+            "scan"
+          ]
+        },
+        {
           "id": "INT-001",
           "title": "Expanded agent catalog and custom skill verification",
           "type": "integration",
@@ -98,7 +170,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Inspect 79 agents catalog and install or update custom skill across targets",
               "data": "ALL_AGENTS, installSkill, hasSkill, testweave update",
-              "expected": "Validates 23 universal agents and 56 dedicated agents, installs and refreshes SKILL.md cleanly"
+              "expected": "Validates 23 universal agents and 56 dedicated agents. Installs and refreshes the complete authoritative skills/testweave bundle: SKILL.md, commands/*.md and references/*.md, with working relative links and no duplicate documentation strings in the installer. Missing or changed managed files fail skill diagnostics; refresh preserves unrelated user files. The generated implementation bundle includes all authoritative skill Markdown alongside source, so its runtime resources remain available. A nested resource directory linked outside the workspace is rejected before bundle writes."
             }
           ],
           "tags": [
@@ -214,6 +286,33 @@ The JSON block below is authoritative. Update affected modules and test steps wi
         "src/mcp/**/*.ts"
       ],
       "tests": [
+        {
+          "id": "ENG-003",
+          "title": "Local discovery and atomic adoption preserve evidence, coverage and concurrent changes",
+          "type": "integration",
+          "priority": "high",
+          "preconditions": [
+            "Git and non-Git project fixtures with source, documentation and tests"
+          ],
+          "steps": [
+            {
+              "action": "Discover functions, routes including [id] paths, documented journeys and automated suites; include ignored, deleted, linked, binary and oversized files",
+              "data": "scanProject; standard Git ignores; dependency/build folders; files over 256 KB; more than 10,000 files",
+              "expected": "Context is prioritized and source evidence remains traceable. Literal path globs cover bracketed route files. Git ignores suppress untracked ignored files; standard dependency/output directories are excluded. Linked, binary, missing and oversized candidates are skipped or invalid explicit context rejected. Over-limit scans fail clearly."
+            },
+            {
+              "action": "Append all discovered modules with the scanned contract snapshot, including a stale snapshot and duplicate IDs",
+              "data": "MarkdownContractStore.append; concurrent contract update; existing lock",
+              "expected": "All drafts validate and append in one locked write preserving prose and policy. Stale snapshots, duplicate IDs and locks fail without overwriting authored scenarios or partially appending modules. Existing upsert behavior remains unchanged."
+            }
+          ],
+          "tags": [
+            "engine",
+            "scan",
+            "atomic",
+            "regression"
+          ]
+        },
         {
           "id": "ENG-001",
           "title": "QA contract storage and MCP operations",

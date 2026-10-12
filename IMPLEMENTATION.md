@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -470,7 +470,15 @@ export async function createContext(directory: string, output: Output = console)
 
 ````src/cli/doctor.ts
 import pc from 'picocolors';
-import { diagnose, repair } from '../engine/doctor.js';
+import path from 'node:path';
+import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { diagnose, repair, type Diagnostic } from '../engine/doctor.js';
+import { findAgent, getSkillsDirForAgent } from '../integrations/agents.js';
+import { IDE_FILES } from '../integrations/ide.js';
+import { mcpTarget } from '../integrations/mcp.js';
+import { hookLocation } from '../integrations/hooks.js';
+import { TESTWEAVE_SKILL_FILES } from '../integrations/skills.js';
 import type { CliContext } from './context.js';
 import { TerminalPrompter, type UserPrompter } from './prompts.js';
 
@@ -482,8 +490,83 @@ export async function runDoctor(context: CliContext, options: DoctorOptions, pro
     await prompt.confirm('Repair missing or modified TestWeave integrations? Invalid contracts will be preserved.'));
   if (shouldFix && canRepair) checks = await repair(context, checks);
   if (options.json) context.output.log(JSON.stringify(checks, null, 2));
-  else for (const check of checks) context.output.log((check.ok ? pc.green('OK') : pc.red('FAIL')) + ' ' + check.message);
+  else await printDiagnostics(context, checks);
   return checks.every((check) => check.ok) ? 0 : 1;
+}
+
+interface DiagnosticRow { label: string; detail: string; check?: Diagnostic }
+
+function compactPath(file: string): string {
+  const relative = path.relative(homedir(), file);
+  return relative === '' ? '~' : !relative.startsWith('..') && !path.isAbsolute(relative) ? path.join('~', relative) : file;
+}
+
+function checkLabel(id: string): string {
+  if (id === 'contract') return 'QA contract';
+  if (id === 'config') return 'Project config';
+  if (id === 'hook') return 'Pre-push hook';
+  const integration = id.slice('ide:'.length);
+  return integration === 'universal' ? 'Universal agents' : findAgent(integration)?.displayName ?? integration;
+}
+
+function integrationPaths(root: string, integration: string): string[] {
+  const skills = getSkillsDirForAgent(integration);
+  return [
+    IDE_FILES[integration],
+    mcpTarget(integration, root)?.file,
+    ...(skills && skills !== '.vscode' ? [path.posix.join(skills, 'testweave')] : []),
+  ].filter((file): file is string => Boolean(file));
+}
+
+async function printDiagnostics(context: CliContext, checks: Diagnostic[]): Promise<void> {
+  const metadata = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+  const rows: DiagnosticRow[] = [
+    { label: 'TestWeave version', detail: metadata.version + ' (this installation)' },
+    { label: 'Node.js runtime', detail: process.version + '  ' + compactPath(process.execPath) },
+    { label: 'Workspace', detail: compactPath(context.root) },
+    { label: 'Skill bundle', detail: TESTWEAVE_SKILL_FILES.length + ' documents (SKILL.md, commands/, references/)' },
+  ];
+  if (!checks.some((check) => check.id === 'config')) rows.push({ label: 'Project config', detail: 'valid  .testweave.json' });
+  for (const check of checks) {
+    const files = await checkFiles(context, check.id);
+    rows.push({ label: checkLabel(check.id), check,
+      detail: check.message.replace(/\s+/g, ' ') + (files.length ? '  ' + [...new Set(files)].join(', ') : '') });
+  }
+  if (!checks.some((check) => check.id === 'hook')) rows.push({ label: 'Pre-push hook', detail: 'disabled in project configuration' });
+  const width = Math.max(...rows.map((row) => row.label.length));
+  const log = (message: string) => context.output.log(message);
+  log('');
+  log(pc.bold('testweave doctor') + '  ' + pc.dim('diagnostics'));
+  log('');
+  for (const row of rows) {
+    const status = row.check ? (row.check.ok ? pc.green('OK  ') : pc.red('FAIL')) + '  ' : '      ';
+    log('    ' + row.label.padEnd(width) + '  ' + status + row.detail);
+  }
+  printSummary(checks, log);
+  log('  ' + pc.dim('testweave ' + metadata.version));
+  log('');
+}
+
+async function checkFiles(context: CliContext, id: string): Promise<string[]> {
+  if (id === 'contract') return ['test-truth.md'];
+  if (id === 'config') return ['.testweave.json'];
+  if (id.startsWith('ide:')) return integrationPaths(context.root, id.slice('ide:'.length));
+  if (id !== 'hook') return [];
+  const location = await hookLocation(context.root, context.git).catch(() => undefined);
+  if (!location) return [];
+  const relative = path.relative(context.root, location.file);
+  return [relative.startsWith('..') || path.isAbsolute(relative) ? compactPath(location.file) : relative];
+}
+
+function printSummary(checks: Diagnostic[], log: (message: string) => void): void {
+  const failed = checks.filter((check) => !check.ok);
+  const passed = checks.length - failed.length;
+  log('');
+  log('  ' + pc.bold('Summary:') + '  ' + (failed.length ? pc.red : pc.green)(passed + '/' + checks.length + ' checks passed'));
+  if (!failed.length) { log('  ' + pc.green('Everything looks good.')); return; }
+  log('  ' + pc.red(failed.length + (failed.length === 1 ? ' check needs' : ' checks need') + ' attention.'));
+  if (failed.some((check) => check.repairable)) log('  Run testweave doctor --fix to repair supported problems.');
+  if (failed.some((check) => !check.repairable)) log('  Some problems require manual repair; inspect the diagnostics above.');
 }
 ````
 
@@ -541,11 +624,12 @@ import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
+import { runScan } from './scan.js';
 import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.5.0')
+  const program = new Command().name('testweave').version('0.6.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -571,6 +655,11 @@ export function createProgram(): Command {
     .option('--json', 'Emit machine-readable report')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
     .action(async (options: SyncOptions) => { process.exitCode = await runSync(await context(), options); });
+  program.command('scan').description('Read project context and discover existing modules, journeys and automated tests')
+    .option('--context <file>', 'Read a workspace-relative project context file first')
+    .option('--apply', 'Add uncovered module drafts to test-truth.md, preserving existing modules')
+    .option('--json', 'Emit context, source evidence and validated module drafts as JSON')
+    .action(async (options: unknown) => { await runScan(await context(), options); });
   program.command('generate').description('Export QA definitions, or author an AI module draft')
     .option('--target <target>', 'jira, xray, or zephyr', 'xray')
     .option('--format <format>', 'csv or json', 'csv')
@@ -678,7 +767,7 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
   }))];
   if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);
   context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
-  context.output.log('Register modules and manual test cases in test-truth.md, then commit the contract with your code.');
+  context.output.log('For an existing project, run testweave scan, then testweave scan --apply to add reviewable module drafts. Review project context and scenarios before committing test-truth.md with your code.');
 }
 ````
 
@@ -754,6 +843,50 @@ export class TerminalPrompter implements UserPrompter {
   async integrations(selected: IdeIntegration[]): Promise<IdeIntegration[]> {
     return promptAgentSelection(selected, this.interactive);
   }
+}
+````
+
+````src/cli/scan.ts
+import path from 'node:path';
+import { z } from 'zod';
+import type { CliContext } from './context.js';
+import { isMissing } from '../engine/files.js';
+import { scanProject } from '../engine/scan.js';
+import { createTestTruth } from '../schema/test-truth.js';
+
+const optionsSchema = z.strictObject({
+  apply: z.boolean().optional(), json: z.boolean().optional(), context: z.string().min(1).optional(),
+});
+export async function runScan(context: CliContext, input: unknown): Promise<void> {
+  const options = optionsSchema.parse(input);
+  let contract;
+  try { contract = await context.store.read(); }
+  catch (error) {
+    if (!isMissing(error)) throw error;
+    contract = createTestTruth(path.basename(context.root));
+  }
+  const report = await scanProject(context.root, contract, options.context);
+  if (options.apply && report.modules.length) {
+    await context.store.initialize(contract);
+    await context.store.append(report.modules, contract);
+  }
+  if (options.json) {
+    context.output.log(JSON.stringify({ ...report, applied: options.apply ? report.modules.length : 0 }, null, 2));
+    return;
+  }
+  context.output.log('Project context (read before source): ' + (report.context.map((entry) => entry.file).join(', ') || 'none'));
+  for (const entry of report.context) {
+    for (const journey of entry.journeys) context.output.log('  Journey candidate (' + entry.file + '): ' + journey);
+  }
+  for (const file of report.files) {
+    const evidence = [...file.functions, ...file.routes, ...file.automatedTests];
+    context.output.log('  ' + file.file + (evidence.length ? ': ' + evidence.join(', ') : ''));
+  }
+  for (const module of report.modules) context.output.log('  Draft module: ' + module.name + ' (' + module.paths.length + ' files, ' + module.tests.length + ' scenarios)');
+  for (const warning of report.warnings) context.output.log('Warning: ' + warning);
+  context.output.log(report.files.length + ' source/test files; ' + report.modules.length + ' uncovered module drafts' +
+    (options.apply ? ' added to test-truth.md.' : '. Preview only; use --apply to add drafts to test-truth.md.'));
+  context.output.log('Review needs-review scenarios against project context before adopting the QA baseline. Scan does not execute tests.');
 }
 ````
 
@@ -1129,6 +1262,208 @@ export function replaceContractBlock(markdown: string, value: TestTruth): string
 }
 ````
 
+````src/engine/scan.ts
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import picomatch from 'picomatch';
+import { simpleGit } from 'simple-git';
+import { isMissing, workspacePath } from './files.js';
+import { testTruthSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
+
+export interface ScanEvidence { file: string; functions: string[]; routes: string[]; automatedTests: string[] }
+export interface ProjectContext { file: string; content: string; journeys: string[] }
+export interface ScanReport {
+  context: ProjectContext[];
+  files: ScanEvidence[];
+  modules: TestModule[];
+  warnings: string[];
+}
+const excluded = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', 'vendor', '.next', '.nuxt', '.venv', 'venv', '__pycache__', 'target', '.agents', '.claude', '.codex']);
+const source = /\.(?:ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rs|java|kt|cs|rb|php|swift|c|cpp|h|sql|sh)$/i;
+const contextName = /^(?:readme|agents|claude|project[-_]?context|context|architecture|requirements|prd|user[-_]?journeys)(?:[._-].*)?\.(?:md|txt)$/i;
+const automated = /(?:^|\/)(?:tests?|__tests__|specs?|e2e|cypress)(?:\/|$)|(?:[._-](?:test|spec)\.|^test_)/i;
+const maxFiles = 10_000;
+const maxBytes = 256_000;
+
+function excludedPath(file: string): boolean {
+  return file.split('/').some((part) => excluded.has(part)) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|\.d\.ts$/.test(file);
+}
+
+async function listFiles(root: string): Promise<string[]> {
+  const git = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
+  if (await git.checkIsRepo()) {
+    const listed = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
+    return [...new Set(listed.split('\0').filter((file) => file && !excludedPath(file)))].sort();
+  }
+  const files: string[] = [];
+  async function walk(directory: string): Promise<void> {
+    for (const entry of await readdir(path.join(root, directory), { withFileTypes: true })) {
+      const file = directory ? directory + '/' + entry.name : entry.name;
+      if (excludedPath(file) || entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) await walk(file);
+      else if (entry.isFile()) files.push(file);
+      if (files.length > maxFiles) throw new Error('Scan exceeds 10,000 files; narrow the workspace or use Git ignore rules');
+    }
+  }
+  await walk('');
+  return files.sort();
+}
+
+async function readText(root: string, file: string, warnings: string[]): Promise<string | undefined> {
+  // Check every component: linked directories must not expose other repositories.
+  let current = root;
+  for (const part of file.split('/')) {
+    current = path.join(current, part);
+    let info;
+    try { info = await lstat(current); }
+    catch (error) {
+      if (!isMissing(error)) throw error;
+      warnings.push('Skipped missing file: ' + file);
+      return undefined;
+    }
+    if (info.isSymbolicLink()) {
+      warnings.push('Skipped symbolic link: ' + file);
+      return undefined;
+    }
+  }
+  const target = await workspacePath(root, file);
+  const info = await lstat(target);
+  if (!info.isFile()) return undefined;
+  if (info.size > maxBytes) {
+    warnings.push('Skipped file larger than 256 KB: ' + file);
+    return undefined;
+  }
+  const content = await readFile(target, 'utf8');
+  if (content.includes('\0')) { warnings.push('Skipped binary file: ' + file); return undefined; }
+  return content;
+}
+
+function matches(content: string, expression: RegExp): string[] {
+  return [...new Set([...content.matchAll(expression)].map((match) => match.slice(1).find((capture) => capture !== undefined)!).filter(Boolean))].slice(0, 100);
+}
+function inspect(file: string, content: string): ScanEvidence {
+  const functions = matches(content, /\b(?:function|def|fn|func)\s+(\w+)|\b(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^\n]*\)|\w+)\s*=>/g);
+  const routes = matches(content, /\.(?:get|post|put|patch|delete|route|command)\s*\(\s*['"]([^'"]+)['"]/g);
+  if (/(?:^|\/)(?:pages|app)\//.test(file) && /(?:\/(?:page|route)\.[^/]+$|pages\/.*\.[jt]sx?$)/.test(file)) routes.push(file);
+  return {
+    file, functions: functions.slice(0, 100), routes,
+    automatedTests: automated.test(file) ? matches(content, /\b(?:it|test|describe)\s*\(\s*['"]([^'"]+)['"]|\bdef\s+(test_\w+)/g) : [],
+  };
+}
+
+// Character classes keep literal filenames compatible with the POSIX glob schema.
+function literalGlob(file: string): string {
+  return file.replace(/[\[\]*?{}()!+@]/g, (character) => character === ']' ? '[]]' : '[' + character + ']');
+}
+function uniqueId(base: string, used: Set<string>): string {
+  let id = base;
+  for (let suffix = 2; used.has(id); suffix++) id = base + '-' + suffix;
+  used.add(id);
+  return id;
+}
+function draftModules(files: ScanEvidence[], context: ProjectContext[], contract: TestTruth): TestModule[] {
+  const tracks = picomatch(contract.policy.sourceGlobs, { dot: true });
+  const ignores = picomatch(contract.policy.ignoreGlobs, { dot: true });
+  const covered = contract.modules.flatMap((module) => module.paths);
+  const isCovered = covered.length ? picomatch(covered, { dot: true }) : () => false;
+  const groups = new Map<string, ScanEvidence[]>();
+  for (const file of files) {
+    if (!tracks(file.file) || ignores(file.file) || isCovered(file.file)) continue;
+    const group = path.posix.dirname(file.file);
+    groups.set(group, [...(groups.get(group) ?? []), file]);
+  }
+  const moduleIds = new Set(contract.modules.map((module) => module.id));
+  const testIds = new Set(contract.modules.flatMap((module) => module.tests.map((test) => test.id)));
+  const modules: TestModule[] = [];
+  for (const [group, entries] of groups) {
+    // The contract permits at most 100 path patterns per module.
+    for (let offset = 0; offset < entries.length; offset += 100) {
+      const batch = entries.slice(offset, offset + 100);
+      const digest = createHash('sha256').update(group + ':' + offset).digest('hex').slice(0, 10);
+      const base = 'scan-' + group.replace(/[^a-zA-Z0-9]+/g, '-').slice(0, 55) + '-' + digest;
+      const id = uniqueId(base, moduleIds);
+      const name = group === '.' ? 'Root modules' : group;
+      const routes = batch.flatMap((entry) => entry.routes);
+      const functions = batch.flatMap((entry) => entry.functions);
+      const testFiles = batch.filter((entry) => automated.test(entry.file));
+      const references = context.map((entry) => entry.file).join(', ') || 'source implementation';
+      const evidence = [...routes, ...functions].slice(0, 10).join(', ') || batch[0]!.file;
+      const tests: TestModule['tests'] = ['success', 'failure', 'boundary'].map((scenario) => ({
+        id: uniqueId(id + '-' + scenario, testIds),
+        title: '[Draft] ' + name + ' ' + scenario + ' scenario',
+        type: routes.length ? 'uat' : 'component',
+        priority: 'medium',
+        preconditions: ['Review ' + references + ' and replace this draft with specific inputs and observable expected results.'],
+        steps: [{
+          action: 'Exercise ' + evidence + ' with ' + scenario + ' inputs after reviewing project requirements.',
+          data: 'TODO: specify representative ' + scenario + ' fixtures.',
+          expected: 'TODO: record the documented ' + scenario + ' outcome; this draft has not been executed.',
+        }],
+        tags: ['scan-draft', 'needs-review', scenario],
+      }));
+      const keywords = [...group.split('/'), ...functions, ...routes].map((value) => value.toLowerCase()).filter((value) => value.length > 2);
+      const journeys = context.flatMap((entry) => entry.journeys.map((journey) => ({ file: entry.file, journey })))
+        .filter((entry) => keywords.some((keyword) => entry.journey.toLowerCase().includes(keyword))).slice(0, 10);
+      for (const [index, entry] of journeys.entries()) tests.push({
+        id: uniqueId(id + '-journey-' + (index + 1), testIds),
+        title: '[Draft] Journey: ' + entry.journey.slice(0, 200),
+        type: 'uat', priority: 'high', preconditions: ['Review the documented journey in ' + entry.file + '.'],
+        steps: [{ action: 'Exercise the documented journey: ' + entry.journey, data: 'TODO: identify actors, fixtures and journey steps.',
+          expected: 'TODO: specify observable acceptance criteria from ' + entry.file + '; this draft has not been executed.' }],
+        tags: ['scan-draft', 'needs-review', 'journey'],
+      });
+      if (testFiles.length) tests.push({
+        id: uniqueId(id + '-automated', testIds), title: '[Draft] Review existing automated tests for ' + name,
+        type: 'regression', priority: 'medium',
+        preconditions: ['Review the existing test runner configuration; no tests were executed by scan.'],
+        steps: [{
+          action: 'Review and run the existing suite using its documented command.',
+          data: testFiles.map((entry) => entry.file + (entry.automatedTests.length ? ': ' + entry.automatedTests.join(', ') : '')).join('; ').slice(0, 20_000),
+          expected: 'TODO: document assertions and required outcomes from the existing suite; record execution separately.',
+        }], tags: ['scan-draft', 'needs-review', 'automated'],
+      });
+      modules.push({ id, name, description: 'Discovery draft for ' + name + '. Review context: ' + references + '. Evidence: ' + evidence,
+        paths: batch.map((entry) => literalGlob(entry.file)), tests });
+    }
+  }
+  return testTruthSchema.parse({ ...contract, modules: [...contract.modules, ...modules] }).modules.slice(contract.modules.length);
+}
+
+/** Local discovery only. Context is read before any implementation source. */
+export async function scanProject(directory: string, contract: TestTruth, explicitContext?: string): Promise<ScanReport> {
+  const root = await realpath(directory);
+  const warnings: string[] = [];
+  const listed = await listFiles(root);
+  if (listed.length > maxFiles) throw new Error('Scan exceeds 10,000 files; narrow the workspace or use Git ignore rules');
+  const manifests = new Set(['package.json', 'pyproject.toml', 'Cargo.toml', 'go.mod', 'composer.json']);
+  const contextFiles = listed.filter((file) => contextName.test(path.posix.basename(file)) || manifests.has(path.posix.basename(file)))
+    .sort((a, b) => Number(!/project[-_]?context|requirements|prd/i.test(a)) - Number(!/project[-_]?context|requirements|prd/i.test(b)) || a.localeCompare(b));
+  let selectedContext: string | undefined;
+  if (explicitContext) {
+    selectedContext = path.relative(root, await workspacePath(root, explicitContext)).split(path.sep).join('/');
+    contextFiles.unshift(selectedContext);
+  }
+  const context: ProjectContext[] = [];
+  for (const file of [...new Set(contextFiles)]) {
+    const content = await readText(root, file, warnings);
+    if (content === undefined) {
+      if (file === selectedContext) throw new Error('Cannot read selected project context: ' + file);
+      continue;
+    }
+    const journeys = content.split(/\r?\n/).filter((line) => /journey|user stor|as a |workflow|acceptance|use case/i.test(line)).map((line) => line.trim()).slice(0, 100);
+    context.push({ file, content, journeys });
+  }
+  if (!context.length) warnings.push('No project context found; review source evidence before adopting drafts. Use --context <file> for custom documentation.');
+  const files: ScanEvidence[] = [];
+  for (const file of listed.filter((file) => source.test(file))) {
+    const content = await readText(root, file, warnings);
+    if (content !== undefined) files.push(inspect(file, content));
+  }
+  return { context, files, modules: draftModules(files, context, contract), warnings };
+}
+````
+
 ````src/engine/store.ts
 import path from 'node:path';
 import { testModuleSchema, testTruthSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
@@ -1140,6 +1475,7 @@ export interface ContractStore {
   readMarkdown(): Promise<string>;
   initialize(contract: TestTruth): Promise<boolean>;
   upsert(module: TestModule): Promise<TestTruth>;
+  append(modules: TestModule[], expected: TestTruth): Promise<TestTruth>;
 }
 export class MarkdownContractStore implements ContractStore {
   readonly file: string;
@@ -1156,6 +1492,20 @@ export class MarkdownContractStore implements ContractStore {
   }
   async upsert(input: TestModule): Promise<TestTruth> {
     const module = testModuleSchema.parse(input);
+    return this.update((current) => {
+      const exists = current.modules.some((entry) => entry.id === module.id);
+      return { ...current, modules: exists
+        ? current.modules.map((entry) => entry.id === module.id ? module : entry)
+        : [...current.modules, module] };
+    });
+  }
+  async append(modules: TestModule[], expected: TestTruth): Promise<TestTruth> {
+    return this.update((current) => {
+      if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during scan; retry');
+      return { ...current, modules: [...current.modules, ...modules] };
+    });
+  }
+  private async update(transform: (current: TestTruth) => TestTruth): Promise<TestTruth> {
     const lock = `${this.file}.lock`;
     await this.io.writeFile(lock, String(process.pid), { flag: 'wx' }).catch((error: unknown) => {
       if (error instanceof Error && 'code' in error && error.code === 'EEXIST') throw new Error('Contract is locked by another writer; retry or remove a stale test-truth.md.lock');
@@ -1164,10 +1514,7 @@ export class MarkdownContractStore implements ContractStore {
     try {
       const markdown = await this.readMarkdown();
       const current = parseTestTruth(markdown);
-      const exists = current.modules.some((entry) => entry.id === module.id);
-      const updated = testTruthSchema.parse({ ...current, modules: exists
-        ? current.modules.map((entry) => entry.id === module.id ? module : entry)
-        : [...current.modules, module] });
+      const updated = testTruthSchema.parse(transform(current));
       if (await this.readMarkdown() !== markdown) throw new Error('Contract changed during update; retry');
       await atomicWrite(this.file, replaceContractBlock(markdown, updated), this.io);
       return updated;
@@ -1181,6 +1528,7 @@ export * from './schema/test-truth.js';
 export * from './engine/markdown.js';
 export * from './engine/files.js';
 export * from './engine/store.js';
+export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
 export * from './engine/doctor.js';
@@ -1524,7 +1872,9 @@ export const RULE_START = '<!-- testweave:start -->';
 export const RULE_END = '<!-- testweave:end -->';
 export const QA_RULES = `${RULE_START}
 ## TestWeave QA contract
+- Read available project context (project-context.md, README, AGENTS.md, architecture and requirements docs) before planning tests or changing source behavior.
 - Read test-truth.md before changing source behavior.
+- For existing projects, run testweave scan to discover modules, journeys and automated tests; review drafts before adopting them.
 - Every changed source file must match a registered module's paths.
 - Update that module's manual test actions and expected results alongside code changes.
 - Include success, failure, and boundary scenarios. Keep test IDs stable and globally unique.
@@ -1577,7 +1927,6 @@ export async function hasIdeRules(root: string, integration: IdeIntegration): Pr
     const text = await readOptional(await workspacePath(root, ruleFile));
     const rulesOk = text !== undefined && text.includes(QA_RULES) && injectRules(text) === text;
     if (!rulesOk) return false;
-    return true;
   }
   const skillsDir = getSkillsDirForAgent(integration);
   if (skillsDir && skillsDir !== '.vscode') {
@@ -1799,439 +2148,54 @@ export function runtimeLaunch(cliPath: string, environment: RuntimeEnvironment =
 
 ````src/integrations/skills.ts
 import path from 'node:path';
-import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { atomicWrite, readOptional, rejectSymlink, workspacePath } from '../engine/files.js';
 
 export const TESTWEAVE_SKILL_NAME = 'testweave';
-export const TESTWEAVE_REFERENCE_NAME = 'reference.md';
+export const TESTWEAVE_REFERENCE_NAME = 'references/functional-testing.md';
 
-export const TESTWEAVE_SKILL_CONTENT = `---
-name: testweave
-description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when inspecting, adding, editing, or testing code to check test-truth.md, prevent QA drift, update test cases, and sync contracts.
----
+interface SkillFile { path: string; content: string }
 
-# TestWeave QA Contract Skill
+function loadSkillFiles(directory: URL, prefix = ''): SkillFile[] {
+  return readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap((entry) => {
+    const relative = prefix + entry.name;
+    const location = new URL(encodeURIComponent(entry.name) + (entry.isDirectory() ? '/' : ''), directory);
+    if (entry.isDirectory()) return loadSkillFiles(location, relative + '/');
+    if (entry.isFile() && entry.name.endsWith('.md')) return [{ path: relative, content: readFileSync(location, 'utf8') }];
+    if (entry.isSymbolicLink()) throw new Error('Skill bundle must not contain symbolic links: ' + relative);
+    return [];
+  });
+}
 
-TestWeave keeps manual QA test contracts (\`test-truth.md\`) synchronized with source code modifications. Every change in system behavior must be matched by corresponding, updated test coverage in \`test-truth.md\`.
-
-## Core Principles
-
-1. **Evidence over assumptions**: Never claim a test was executed without actual evidence. This contract describes tests and acceptance criteria, not execution results.
-2. **Read the contract first**: Inspect \`test-truth.md\` before altering source behavior.
-3. **Path coverage**: Every modified source file must match at least one registered module's paths pattern.
-4. **Synchronized updates**: When editing code, update that module's manual test actions and expected results in the same commit.
-5. **Scenario diversity**: Include success, failure, and edge/boundary scenarios. Keep test IDs stable and globally unique.
-6. **Zero drift before committing**: Run \`testweave sync\` before committing. Staged changes must pass without unmapped or stale module drift.
-7. **Preserve policy**: Never bypass Git pre-push hooks or loosen warning policies to conceal QA drift.
-
-## When to Use This Skill
-
-- **Planning code changes**: Review which modules and test cases cover the files you will touch.
-- **Adding new features**: Register new modules with comprehensive test plans and valid file paths.
-- **Refactoring or fixing bugs**: Update existing manual test actions, expected results, or add regression test cases.
-- **Pre-commit verification**: Run \`testweave sync\` to confirm zero QA drift.
-- **System diagnostics**: Run \`testweave doctor\` to ensure configuration, agent rules, and hooks are intact.
-
-## Test Categorization & Types
-
-Test cases in \`test-truth.md\` support explicit functional testing types:
-- \`unit\`: Unit testing for isolated logic, utilities, and components.
-- \`integration\`: Integration testing for multi-component and service boundaries.
-- \`system\`: System testing for complete end-to-end flows.
-- \`sanity\`: Sanity testing for quick verification of targeted bug fixes.
-- \`smoke\`: Smoke testing for fundamental build and readiness checks.
-- \`regression\`: Regression testing to verify unchanged features remain functional.
-- \`uat\`: User Acceptance Testing from the customer/operator perspective.
-- \`ui\`: UI testing for interactive visual elements, CLI prompts, and layouts.
-- \`api\`: API testing for MCP tool schemas, endpoints, and data contracts.
-- \`interface\`: Interface testing between distinct subsystems (IDEs, Git hooks).
-- \`component\`: Component testing for modular building blocks.
-- \`e2e\`: End-to-end lifecycle verification.
-
-For complete definitions, test design techniques (Boundary Value Analysis, Equivalence Partitioning), and authoring guidelines, see [reference.md](reference.md).
-
-## Tools & Commands
-
-### MCP Tools (when running in MCP-enabled agent)
-- \`get_contract\`: Inspect the current QA contract, registered modules, paths, and test cases.
-- \`upsert_test_module\`: Add or update a module in \`test-truth.md\` with stable test IDs, test types, actions, and expected results.
-- \`check_drift\`: Verify whether working tree changes or diffs diverge from the QA contract.
-
-### CLI Commands
-- \`testweave sync\`: Check source changes against QA contract.
-  - \`--strict\`: Block on drift even if policy is set to warn.
-  - \`--base <ref>\`: Compare against a specific Git revision instead of upstream.
-  - \`--json\`: Output machine-readable drift report.
-- \`testweave doctor\`: Validate the contract, agent rules, and Git pre-push hook.
-  - \`--fix\`: Automatically repair missing rules or hooks without losing contracts.
-- \`testweave generate\`: Export manual tests for Jira, Xray, or Zephyr, or draft modules with AI.
-  - \`--target <jira|xray|zephyr>\`: Target QA tracking system.
-  - \`--format <csv|json>\`: Export format.
-  - \`--provider <openai|anthropic>\`: AI module drafting.
-- \`testweave init\` / \`testweave setup\`: Initialize contract, agent skills, and Git pre-push hook.
-  - \`-y, --yes\`: Accept defaults non-interactively.
-- \`testweave update\`: Update agent skills, IDE rules, and hooks to the latest definitions.
-  - \`-y, --yes\`: Accept existing or detected integrations non-interactively.
-
-## Development Workflow
-
-1. **Read Contract**: Open \`test-truth.md\` or call \`get_contract\` to inspect existing test coverage for target files.
-2. **Implement Changes**: Modify the source code.
-3. **Update Test Contract**: Update or add test cases with clear actions, types, and expected outcomes matching the new behavior.
-4. **Verify Alignment**: Run \`testweave sync\` (or call \`check_drift\`) to ensure zero drift.
-5. **Commit Together**: Commit \`test-truth.md\` in the exact same commit as the source code changes.
-`;
-
-export const TESTWEAVE_REFERENCE_CONTENT = `# TestWeave QA Reference: Functional Testing & Living Test Contracts
-
-This reference documents functional testing principles, taxonomies, test design techniques, and TestWeave contract schema specifications for manual and automated QA verification.
-
----
-
-## 1. Overview of Functional Testing
-
-**Functional Testing** is a software testing methodology that validates whether an application operates in strict compliance with its functional requirements and specifications.
-
-- **Black-box perspective**: Tests evaluate the software from the outside by providing inputs and examining the resulting outputs and behaviors, without relying on internal code mechanics.
-- **Specification-driven**: Acceptance criteria, preconditions, and observable expected outcomes form the authoritative benchmark of correctness.
-- **Living contract in TestWeave**: \`test-truth.md\` serves as the repository's single source of truth for functional test specifications. When system behavior evolves, the QA contract must be updated simultaneously to eliminate QA drift.
-
----
-
-## 2. Taxonomy of Test Types in TestWeave
-
-TestWeave's schema (\`test-truth.ts\`) supports distinct test types for test cases:
-
-| Type Key | Display Name | Level / Category | Primary Purpose |
-|----------|--------------|------------------|-----------------|
-| \`unit\` | Unit Testing | Component / Unit | Validates isolated functions, algorithms, and standalone units. |
-| \`integration\` | Integration Testing | Subsystem | Verifies interfaces and data exchange between multiple modules or external services. |
-| \`system\` | System Testing | System | Evaluates the completely integrated software against holistic requirements. |
-| \`sanity\` | Sanity Testing | Build / Acceptance | Fast, targeted verification verifying that specific bug fixes or minor patches work without breaking dependent features. |
-| \`smoke\` | Smoke Testing | Build Verification | Broad, shallow check verifying that core capabilities function and the build is stable enough for deeper testing. |
-| \`regression\` | Regression Testing | Maintenance / Release | Ensures recent modifications, refactoring, or additions have not broken existing working features. |
-| \`uat\` | User Acceptance Testing (UAT) | Acceptance | Validates end-to-end user journeys and operational scenarios against real customer expectations. |
-| \`ui\` | UI Testing | Presentation | Verifies visual presentations, terminal UI prompts, banners, layouts, and error rendering. |
-| \`api\` | API Testing | Interface / Service | Validates programmatic contracts, MCP tool payloads, CLI command line interfaces, and JSON schema boundaries. |
-| \`interface\` | Interface Testing | Boundary | Verifies communication protocols and contracts between distinct software systems (e.g., IDEs, Git hooks). |
-| \`component\` | Component Testing | Module | Validates cohesive modular building blocks before full system assembly. |
-| \`e2e\` | End-to-End Testing | Flow | Validates entire lifecycles from fresh initialization to commit and push verification. |
-
-### Test Type Breakdown & Examples
-
-#### 1. Unit Testing (\`unit\`)
-- **Focus**: Fine-grained logic, mathematical routines, path sanitizers, and parsing routines.
-- **When to Use**: Whenever writing pure functions or isolated modules where edge cases can be exercised in isolation.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "UNIT-001",
-    "title": "POSIX glob path validator rejects path traversal and absolute paths",
-    "type": "unit",
-    "priority": "critical",
-    "preconditions": ["sourcePatternSchema validator imported"],
-    "steps": [
-      {
-        "action": "Validate forbidden patterns such as ../secret, /etc/passwd, and C:\\\\file",
-        "data": "['../secret', '/etc/passwd', 'C:/file', 'src\\\\file']",
-        "expected": "Validator rejects all traversed or non-POSIX paths with descriptive schema errors"
-      }
-    ],
-    "tags": ["unit", "schema", "security"]
-  }
-  \`\`\`
-
-#### 2. Integration Testing (\`integration\`)
-- **Focus**: Interaction points between subsystems (e.g., Markdown parser + Contract Store, CLI + Git subsystem).
-- **When to Use**: When validating data flow across module boundaries.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "INT-001",
-    "title": "Contract store updates disk and preserves outside markdown prose",
-    "type": "integration",
-    "priority": "high",
-    "preconditions": ["Initialized test-truth.md with team notes"],
-    "steps": [
-      {
-        "action": "Upsert modified test module via MarkdownContractStore",
-        "data": "store.upsert(updatedModule)",
-        "expected": "Authoritative JSON block is updated while surrounding notes and markdown headers remain intact"
-      }
-    ],
-    "tags": ["integration", "store", "markdown"]
-  }
-  \`\`\`
-
-#### 3. System Testing (\`system\`)
-- **Focus**: Complete, packaged application behavior in real target environments.
-- **When to Use**: Verifying end-to-end flows with real package managers, tarballs, or CLI installations.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "SYS-001",
-    "title": "Cross-package-manager verification on fresh workspace",
-    "type": "system",
-    "priority": "high",
-    "preconditions": ["Built npm tarball package available"],
-    "steps": [
-      {
-        "action": "Execute testweave setup, sync, and doctor using npm, pnpm, yarn, and bun",
-        "data": "npm run check:manager -- <manager>",
-        "expected": "CLI installs cleanly, executes matching release version, and completes doctor checks"
-      }
-    ],
-    "tags": ["system", "ci", "package-managers"]
-  }
-  \`\`\`
-
-#### 4. Sanity Testing (\`sanity\`)
-- **Focus**: High-speed, focused check following a patch or bug fix to verify the defect is resolved.
-- **When to Use**: After committing a specific fix or hotfix before running full regression suites.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "SAN-001",
-    "title": "Verify fix for CSV formula injection on export command",
-    "type": "sanity",
-    "priority": "critical",
-    "preconditions": ["TestWeave CLI available with exporter fix"],
-    "steps": [
-      {
-        "action": "Export contract containing cells starting with =, +, -, @ to CSV",
-        "data": "testweave generate --target xray --format csv",
-        "expected": "Formula characters are safely prefixed with single quotes in CSV output"
-      }
-    ],
-    "tags": ["sanity", "security", "export"]
-  }
-  \`\`\`
-
-#### 5. Smoke Testing (\`smoke\`)
-- **Focus**: Basic sanity and operational viability of a new build or fresh install.
-- **When to Use**: Immediately after building or packaging, prior to running detailed test suites.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "SMK-001",
-    "title": "CLI basic startup, help display, and version flag",
-    "type": "smoke",
-    "priority": "critical",
-    "preconditions": ["Node.js runtime installed"],
-    "steps": [
-      {
-        "action": "Run testweave --help and testweave --version",
-        "data": "testweave --version",
-        "expected": "Prints current semantic version and exits with status 0"
-      }
-    ],
-    "tags": ["smoke", "cli"]
-  }
-  \`\`\`
-
-#### 6. Regression Testing (\`regression\`)
-- **Focus**: Ensuring modifications do not introduce unintended side effects in existing features.
-- **When to Use**: Regular CI builds, pull request validations, and pre-release audits.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "REG-001",
-    "title": "Multi-version update command maintains agent rule integrity",
-    "type": "regression",
-    "priority": "high",
-    "preconditions": ["Workspace initialized with prior version rules and hooks"],
-    "steps": [
-      {
-        "action": "Run testweave update --yes across release transitions",
-        "data": "npx testweave update --yes",
-        "expected": "Updates skills and rules without modifying user custom rules outside TestWeave markers"
-      }
-    ],
-    "tags": ["regression", "update", "ide"]
-  }
-  \`\`\`
-
-#### 7. User Acceptance Testing (\`uat\`)
-- **Focus**: Practical usability, onboarding flow, and developer experience.
-- **When to Use**: Validating interactive wizards and setup onboarding flows.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "UAT-001",
-    "title": "Interactive terminal setup flow with fuzzy agent selection",
-    "type": "uat",
-    "priority": "high",
-    "preconditions": ["Terminal session in empty repository"],
-    "steps": [
-      {
-        "action": "Run interactive testweave setup, search for cursor and claude, and confirm",
-        "data": "npx testweave setup",
-        "expected": "Renders clear ASCII banner, prompts for agent selection, confirms file injection, and provides next steps"
-      }
-    ],
-    "tags": ["uat", "dx", "interactive"]
-  }
-  \`\`\`
-
-#### 8. UI Testing (\`ui\`)
-- **Focus**: Visual terminal formatting, layout alignment, ANSI colors, spinner animations, and error highlights.
-- **When to Use**: Testing interactive CLI components, banners, and terminal feedback.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "UI-001",
-    "title": "Retro ASCII banner and agent summary formatting",
-    "type": "ui",
-    "priority": "medium",
-    "preconditions": ["Standard terminal stdout"],
-    "steps": [
-      {
-        "action": "Trigger banner rendering in setup overview",
-        "data": "printSetupOverview()",
-        "expected": "Correct color gradients, aligned divider columns, and clear universal/dedicated categorization"
-      }
-    ],
-    "tags": ["ui", "terminal", "banner"]
-  }
-  \`\`\`
-
-#### 9. API Testing (\`api\`)
-- **Focus**: MCP (Model Context Protocol) tool signatures, inputs, and outputs over stdio.
-- **When to Use**: Validating agent tool calling interfaces and schema enforcement.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "API-001",
-    "title": "MCP stdio tool interface and living-test-contract resource",
-    "type": "api",
-    "priority": "critical",
-    "preconditions": ["MCP server running via stdio transport"],
-    "steps": [
-      {
-        "action": "Send initialize request, list resources, and call upsert_test_module",
-        "data": "tools/call: upsert_test_module",
-        "expected": "Returns validated tool result with updated module count and resource URI"
-      }
-    ],
-    "tags": ["api", "mcp", "stdio"]
-  }
-  \`\`\`
-
-#### 10. Interface Testing (\`interface\`)
-- **Focus**: Boundary contracts with external systems (e.g. IDE config files, Git hooks, CI workflows).
-- **When to Use**: Testing IDE rule marker injection and Git pre-push hook execution.
-- **Example**:
-  \`\`\`json
-  {
-    "id": "ITF-001",
-    "title": "Pre-push hook blocks push when contract has drift",
-    "type": "interface",
-    "priority": "critical",
-    "preconditions": ["Git repository with pre-push hook installed and policy mode block"],
-    "steps": [
-      {
-        "action": "Modify source code without updating test-truth.md and run git push",
-        "data": "git push origin main",
-        "expected": "Hook exits with non-zero code, displays drift details, and prevents remote push"
-      }
-    ],
-    "tags": ["interface", "git", "hook"]
-  }
-  \`\`\`
-
----
-
-## 3. Functional Testing Design Techniques
-
-Functional test case design relies on proven techniques to maximize test coverage while avoiding redundant test steps:
-
-### A. Equivalence Class Partitioning (ECP)
-- **Concept**: Divides the input domain of a program into partitions of equivalent data from which test cases can be derived.
-- **Application**:
-  - *Valid partition*: Positively matched workspace globs (\`src/**/*.ts\`).
-  - *Invalid partitions*: Leading slashes (\`/etc/passwd\`), backslashes on Windows (\`src\\\\file\`), parent traversal (\`../outside\`).
-
-### B. Boundary Value Analysis (BVA)
-- **Concept**: Focuses on boundary conditions where software defects cluster (minimum, minimum + 1, nominal, maximum - 1, maximum).
-- **Application**:
-  - Module / test title lengths: Min length (1 char), Max length (20,000 chars).
-  - Array sizes: Empty (\`[]\`), 1 element, 500 steps, 1,000 tests.
-
-### C. Decision Table Testing
-- **Concept**: Maps combinations of input conditions to resulting actions in a tabular matrix.
-- **Application**:
-  | Condition: Policy Mode | Condition: Working Tree | Action: testweave sync exit | Action: Report |
-  |------------------------|-------------------------|-----------------------------|----------------|
-  | \`block\` | Clean / Synced | Exit 0 | Synced |
-  | \`block\` | Drifted | Exit 1 | Blocked |
-  | \`warn\` | Drifted | Exit 0 | Warning logged |
-  | \`warn\` (\`--strict\`) | Drifted | Exit 1 | Blocked |
-
-### D. State Transition Testing
-- **Concept**: Tests the system across lifecycle states and validates valid and invalid transitions.
-- **Application**:
-  - States: Uninitialized $\\rightarrow$ Initialized $\\rightarrow$ Source Modified (Drifted) $\\rightarrow$ Contract Updated $\\rightarrow$ Synced & Verified.
-
-### E. Error Guessing
-- **Concept**: Anticipates common programmer and environmental mistakes based on past defect history.
-- **Application**:
-  - Symlink escapes outside workspace boundary.
-  - Formula injection via CSV export fields.
-  - Race conditions with lock files during concurrent writes.
-
----
-
-## 4. TestWeave QA Contract Lifecycle
-
-1. **Analyze Requirements**: Understand what source code is changing and the intended user-facing or technical behavior.
-2. **Review Contract**: Call \`get_contract\` or read \`test-truth.md\` to identify existing modules and tests covering the modified files.
-3. **Design Scenarios**: Apply BVA and ECP to define concrete preconditions, test steps (action, data, expected outcome), and test types.
-4. **Implement & Update**: Modify source code and immediately update the module in \`test-truth.md\` via \`upsert_test_module\` or direct edit.
-5. **Verify Drift**: Run \`testweave sync\` (or MCP \`check_drift\`) to ensure zero drift before committing.
-6. **Commit Atomically**: Commit both the source changes and the updated \`test-truth.md\` in the exact same Git commit.
-
----
-
-## 5. Functional vs. Non-Functional Testing
-
-| Parameter | Functional Testing | Non-Functional Testing |
-|-----------|--------------------|------------------------|
-| **Focus** | Validates *what* the system does against functional specifications. | Validates *how well* the system performs (speed, scalability, security). |
-| **Criteria** | Business requirements, user actions, expected output. | Performance, concurrency, reliability, throughput. |
-| **Execution** | Manual QA test contracts (\`test-truth.md\`), integration tests, unit tests. | Load tests, stress tests, benchmark suites. |
-| **TestWeave Role** | Primary authoritative contract defining acceptance criteria. | Complementary metrics referenced via tags or notes. |
-
----
-
-## 6. Official References
-
-- **GeeksforGeeks Functional Testing Guide**: [Functional Testing - Software Testing](https://www.geeksforgeeks.org/software-testing/software-testing-functional-testing/)
-- **TestWeave Repository**: Living Manual QA Contract specification engine and drift detector.
-`;
+// This relative location works for both src/integrations and published dist/integrations.
+export const TESTWEAVE_SKILL_FILES = Object.freeze(
+  loadSkillFiles(new URL('../../skills/testweave/', import.meta.url)).map((file) => Object.freeze(file)),
+);
+function requiredContent(relative: string): string {
+  const file = TESTWEAVE_SKILL_FILES.find((entry) => entry.path === relative);
+  if (!file) throw new Error('TestWeave package is missing skill document: ' + relative);
+  return file.content;
+}
+// Preserve the public content exports while reading their authoritative Markdown.
+export const TESTWEAVE_SKILL_CONTENT = requiredContent('SKILL.md');
+export const TESTWEAVE_REFERENCE_CONTENT = requiredContent(TESTWEAVE_REFERENCE_NAME);
 
 export async function installSkill(root: string, skillsDir: string): Promise<string> {
-  const relativeFile = path.join(skillsDir, TESTWEAVE_SKILL_NAME, 'SKILL.md');
-  const file = await workspacePath(root, relativeFile);
-  await atomicWrite(file, TESTWEAVE_SKILL_CONTENT);
-
-  const relativeReference = path.join(skillsDir, TESTWEAVE_SKILL_NAME, TESTWEAVE_REFERENCE_NAME);
-  const referenceFile = await workspacePath(root, relativeReference);
-  await atomicWrite(referenceFile, TESTWEAVE_REFERENCE_CONTENT);
-
-  return file;
+  const targets = await Promise.all(TESTWEAVE_SKILL_FILES.map(async (entry) => ({
+    ...entry, target: await workspacePath(root, path.join(skillsDir, TESTWEAVE_SKILL_NAME, entry.path)),
+  })));
+  for (const entry of targets) await atomicWrite(entry.target, entry.content);
+  return targets.find((entry) => entry.path === 'SKILL.md')!.target;
 }
 
 export async function hasSkill(root: string, skillsDir: string): Promise<boolean> {
   try {
-    const relativeFile = path.join(skillsDir, TESTWEAVE_SKILL_NAME, 'SKILL.md');
-    const file = await workspacePath(root, relativeFile);
-    const content = await readOptional(file);
-    const hasSkillFile = content !== undefined && content.includes('name: testweave') && content.includes('TestWeave QA Contract Skill');
-    if (!hasSkillFile) return false;
-
-    const relativeReference = path.join(skillsDir, TESTWEAVE_SKILL_NAME, TESTWEAVE_REFERENCE_NAME);
-    const referenceFile = await workspacePath(root, relativeReference);
-    const referenceContent = await readOptional(referenceFile);
-    return referenceContent !== undefined && referenceContent.includes('TestWeave QA Reference') && referenceContent.includes('Functional Testing');
+    for (const entry of TESTWEAVE_SKILL_FILES) {
+      const file = await workspacePath(root, path.join(skillsDir, TESTWEAVE_SKILL_NAME, entry.path));
+      await rejectSymlink(file);
+      if (await readOptional(file) !== entry.content) return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -2375,7 +2339,7 @@ async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.5.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.6.0' });
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',
@@ -2576,11 +2540,589 @@ export function createTestTruth(project: string): TestTruth {
 }
 ````
 
+````skills/testweave/SKILL.md
+---
+name: testweave
+description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when adopting an existing project, inspecting or changing code, maintaining test-truth.md, checking QA drift, or exporting functional test definitions.
+---
+
+# TestWeave QA Contract Skill
+
+Maintain functional QA scenarios in `test-truth.md` alongside the behavior they describe. Read only the command and reference documents relevant to the task.
+
+## Shared workflow
+
+1. Read available project context first: project-context.md, README, AGENTS.md, architecture, requirements and user-journey documentation. Use it to understand existing behavior and acceptance criteria.
+2. Read `test-truth.md` before changing behavior. Every changed source file must match a registered module's paths.
+3. Update the affected module's scenarios alongside its code. Preserve existing module and globally unique test IDs, and include success, failure and boundary cases.
+4. Distinguish test definitions from execution evidence. Never claim tests ran without evidence. Discovery drafts marked `needs-review` require specific inputs and observable expected outcomes.
+5. Run `testweave sync` against an available baseline and resolve drift before committing code and contract together. Preserve enforcement policy and Git hooks.
+
+## Choose the command guide
+
+| Task | Read |
+| --- | --- |
+| Adopt an existing project; discover modules, functions, journeys and tests | [commands/scan.md](commands/scan.md) |
+| Initialize a workspace and select agent integrations | [commands/init.md](commands/init.md) |
+| Refresh installed skills, rules, MCP registrations and hooks | [commands/update.md](commands/update.md) |
+| Check changes against the QA contract; interpret drift | [commands/sync.md](commands/sync.md) |
+| Diagnose or repair workspace setup | [commands/doctor.md](commands/doctor.md) |
+| Export QA definitions or request an AI module draft | [commands/generate.md](commands/generate.md) |
+| Configure MCP clients or maintain contracts through MCP | [commands/mcp.md](commands/mcp.md) |
+
+## References
+
+- Read [references/contract-schema.md](references/contract-schema.md) when authoring or validating modules, paths and test cases.
+- Read [references/functional-testing.md](references/functional-testing.md) when choosing test types or designing functional scenarios.
+````
+
+````skills/testweave/commands/doctor.md
+# Diagnose and repair setup
+
+```sh
+testweave doctor
+testweave doctor --json
+testweave doctor --fix
+```
+
+The terminal report shows a diagnostics heading, aligned OK/FAIL rows with relevant file paths, installation and workspace details, and a passed/total check summary. Disabled hooks appear as information and are not counted. Failed checks include automatic or manual repair guidance; `--fix` reports the final results after repair. `--json` emits only the diagnostic array for scripts.
+
+Doctor validates the contract, setup configuration, selected IDE rules/MCP registrations, every managed skill document, and enabled Git hook. Missing, outdated or modified command/reference files make the skill installation unhealthy.
+
+`--fix` repairs supported missing or outdated integrations using the package's authoritative bundle. It preserves authored contracts, surrounding IDE instructions, other MCP servers and unrelated files in skill directories. Malformed contracts or unsupported configuration problems require manual repair; inspect diagnostics before editing them.
+
+Exit code 0 means healthy diagnostics, 1 means unresolved checks, and 2 means an operational error. Use [update](update.md) to change selected integrations or refresh definitions after an upgrade.
+````
+
+````skills/testweave/commands/generate.md
+# Export QA definitions or draft a module
+
+## Export
+
+```sh
+testweave generate --target xray --format csv --output qa/xray-tests.csv
+testweave generate --target jira --format json --project-key PROJ
+```
+
+Targets are `jira`, `xray` and `zephyr`; formats are `csv` and `json`. Defaults are Xray CSV. JSON requires `--project-key`. Omit `--output`, or use `--output -`, for stdout. File output must be within the workspace and cannot overwrite an existing file.
+
+Exports contain definitions, not execution results. Review the artifact before importing it; generate does not upload cases.
+
+## Optional AI drafting
+
+```sh
+testweave generate --provider openai --model <model-id> --context docs/approved-context.md
+testweave generate --provider anthropic --model <model-id> --context docs/approved-context.md --module authentication
+```
+
+AI drafting requires an explicit provider, model and context file. Credentials come from `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. Only that context and the selected existing module, when requested, are sent to the provider. Choose context that is appropriate to send.
+
+Drafts are schema-validated and emitted for review; generate does not apply them to the contract. With `--module`, preserve the existing identity and retain required scenarios when applying the complete draft. Read [the contract schema](../references/contract-schema.md) and [functional testing](../references/functional-testing.md) to review its quality.
+````
+
+````skills/testweave/commands/init.md
+# Initialize a workspace
+
+```sh
+testweave init
+testweave setup --yes
+testweave init --yes --no-hook
+```
+
+`setup` aliases `init`. Interactive setup selects integrations; `--yes` accepts existing or default selections. `--no-hook` skips Git hook installation.
+
+Setup creates or validates `test-truth.md`, saves selections in `.testweave.json`, installs this skill bundle and IDE rules, configures MCP for selected verified clients, and installs a pre-push hook when enabled and Git is available. Existing contract content is preserved; invalid contracts require repair.
+
+A new contract starts with no modules. For a project already in development, follow [scan](scan.md), review its drafts against project context and commit the QA baseline. For a new project, author modules using [the contract schema](../references/contract-schema.md). Run [doctor](doctor.md) to check installation.
+````
+
+````skills/testweave/commands/mcp.md
+# MCP clients and contract tools
+
+```sh
+testweave mcp config --provider codex
+testweave mcp install --provider codex
+testweave mcp install --config .custom/mcp.json --key customServers
+testweave mcp
+```
+
+`mcp` starts the stdio server. Client setup must use the installed executable with the intended project `--cwd`. `mcp config` prints configuration; `mcp install` writes a verified provider's project registration or a custom workspace JSON/JSONC entry.
+
+Use either `--provider` or custom `--config`/`--key` options. Configuration export also accepts `--format json|toml`; provider output must match its native format. Generic exports default to JSON with the `mcpServers` key. Existing servers and supported comments are preserved; malformed configuration requires repair.
+
+Read the `living-test-contract` resource to inspect the authoritative Markdown. Available tools are:
+
+- `analyze_code_drift`: read-only working-tree QA check with optional `base` and `strict`; missing upstream requires an explicit base.
+- `upsert_test_module`: creates or replaces a complete module by ID. Include all scenarios to retain and preserve test IDs.
+- `generate_qa_export`: returns test definitions without writing files or uploading them; JSON requires `projectKey`.
+
+Read [the contract schema](../references/contract-schema.md) before upserting modules. CLI [scan](scan.md) provides local discovery; it is not an MCP tool.
+````
+
+````skills/testweave/commands/scan.md
+# Adopt an existing project
+
+Read project documentation before designing tests. Use scan to inventory an existing codebase before adding its QA baseline.
+
+```sh
+testweave scan
+testweave scan --context docs/product-context.md --json
+testweave scan --apply
+```
+
+- Default scan is a read-only preview. `--json` returns project context text, function/route/test evidence, documented journey candidates and validated module drafts.
+- `--context <file>` prioritizes a workspace-relative context document; available standard context and package manifests are also read before implementation files.
+- `--apply` creates a contract if needed and appends drafts only for uncovered files tracked by its existing policy. Authored modules, IDs, policy and surrounding Markdown are preserved. Repeating a scan on unchanged covered files adds nothing.
+- Scan works without an AI provider. It uses filename and text heuristics, groups uncovered files by directory, and does not execute tests or certify coverage.
+- Git projects exclude ignored untracked files; non-Git projects use built-in dependency/build exclusions. Linked, binary, missing and files over 256 KB are skipped. More than 10,000 files fails with guidance to narrow scope. Invalid explicitly selected context fails before applying drafts.
+
+Review the source evidence and context. Replace `needs-review` TODOs with specific actors, preconditions, fixtures, actions and acceptance criteria. Verify source tracking and module paths using [the contract schema](../references/contract-schema.md), then commit the reviewed baseline. Use [init](init.md) to install integrations and hooks; scan only manages discovery and contract adoption.
+````
+
+````skills/testweave/commands/sync.md
+# Check QA drift
+
+```sh
+testweave sync
+testweave sync --base origin/main --strict --json
+```
+
+Use an available repository revision for `--base`. Without it, working-tree checks require a resolvable upstream. `--strict` blocks drift even under warning policy; `--json` returns a structured report.
+
+Every changed tracked source file needs module coverage. An existing affected module needs changes to its description or test content; renaming it, editing paths or reordering tests does not clear stale documentation. Review whether the updated scenarios describe the actual behavior change.
+
+- `unmapped`: add relevant scenarios with matching paths or extend the appropriate module.
+- `stale-module`: revise the affected module's scenarios and regression expectations.
+- `removed-module`: retain coverage and document retired behavior.
+
+Both baseline and current tracking policies and module paths are considered. Weakening policy cannot conceal drift. When paths overlap, all affected modules need review.
+
+The installed hook uses `--pre-push` and reads ref updates from stdin to inspect committed snapshots. A dirty contract cannot make a stale committed push pass.
+
+Exit codes: 0 for alignment or non-strict warning drift, 1 for blocked drift, and 2 for operational/schema errors. A passing sync establishes documentation alignment; it does not prove test execution or scenario quality.
+````
+
+````skills/testweave/commands/update.md
+# Refresh TestWeave integrations
+
+```sh
+testweave update
+testweave update --yes
+testweave update --yes --no-hook
+```
+
+Use update after upgrading TestWeave or changing selected agents. Interactive update can change integrations; `--yes` uses existing or detected/default selections.
+
+Update refreshes the entire managed skill bundle, IDE rules, selected MCP launch paths, setup configuration and enabled hooks. It validates the contract while preserving its authored modules and tests. Command and reference documents come from the installed package's `skills/testweave/` bundle; edit that source bundle when developing TestWeave.
+
+Missing or modified managed skill files are restored on refresh. Unrelated user files in the installed skill directory are preserved. Restart affected MCP clients after registration changes. Use [doctor](doctor.md) to verify or repair setup.
+````
+
+````skills/testweave/references/contract-schema.md
+# TestWeave contract schema
+
+`test-truth.md` contains exactly one top-level fenced `json testweave` block. That JSON is authoritative; surrounding Markdown is preserved by contract updates.
+
+## Contract and policy
+
+- `schemaVersion`: 1.
+- `project`: nonempty display name.
+- `policy.mode`: `block` or `warn`.
+- `policy.sourceGlobs`: 1–100 positive workspace-relative POSIX globs covering behavior-bearing files.
+- `policy.ignoreGlobs`: up to 100 exclusion globs.
+- `modules`: up to 10,000 modules; an initial baseline may be empty.
+
+Paths cannot be absolute, negated, contain backslashes, colons, parent traversal, newlines or nulls. Use forward slashes on Windows. Put exclusions in policy rather than negating module paths. Each pattern is 1–500 characters.
+
+## Modules and tests
+
+A module requires `id`, `name`, `description`, `paths` and `tests`. Module IDs are unique. A module has 1–100 paths and 1–1,000 tests.
+
+A test requires `id`, `title`, `priority`, `preconditions`, `steps` and `tags`. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
+
+- `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component or e2e. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
+- `priority`: low, medium, high or critical.
+- `preconditions`: up to 100 nonempty strings.
+- `steps`: 1–500 objects containing nonempty `action` and `expected`, plus `data` (which may be empty).
+- `tags`: up to 100 nonempty labels, each at most 100 characters.
+
+Names, descriptions, titles, preconditions, actions and expected results are trimmed nonempty strings up to 20,000 characters. Step data is up to 20,000 characters. Unknown object fields are rejected. Use `[]` for absent preconditions or tags.
+
+## Example
+
+~~~json testweave
+{
+  "schemaVersion": 1,
+  "project": "Example",
+  "policy": {
+    "mode": "block",
+    "sourceGlobs": ["src/**/*.ts"],
+    "ignoreGlobs": ["**/*.d.ts"]
+  },
+  "modules": [
+    {
+      "id": "authentication",
+      "name": "Authentication",
+      "description": "Registered users start authenticated sessions.",
+      "paths": ["src/auth/**"],
+      "tests": [
+        {
+          "id": "AUTH-001",
+          "title": "Registered user signs in",
+          "type": "smoke",
+          "priority": "high",
+          "preconditions": ["A verified test account exists"],
+          "steps": [
+            {
+              "action": "Submit the test account credentials on the sign-in form",
+              "data": "Valid fixture email and password",
+              "expected": "The dashboard appears with an active session"
+            }
+          ],
+          "tags": ["auth", "success"]
+        }
+      ]
+    }
+  ]
+}
+~~~
+
+Preserve established IDs. An upsert replaces the complete module; include every test to retain. Add failure and boundary cases for this example using [functional testing guidance](functional-testing.md). Tests describe acceptance criteria and do not imply they have been executed.
+````
+
+````skills/testweave/references/functional-testing.md
+# TestWeave QA Reference: Functional Testing & Living Test Contracts
+
+This reference documents functional testing principles, taxonomies, test design techniques, and scenario examples for manual and automated QA verification.
+
+---
+
+## 1. Overview of Functional Testing
+
+**Functional Testing** is a software testing methodology that validates whether an application operates in strict compliance with its functional requirements and specifications.
+
+- **Black-box perspective**: Tests evaluate the software from the outside by providing inputs and examining the resulting outputs and behaviors, without relying on internal code mechanics.
+- **Specification-driven**: Acceptance criteria, preconditions, and observable expected outcomes form the authoritative benchmark of correctness.
+- **Living contract in TestWeave**: `test-truth.md` serves as the repository's single source of truth for functional test specifications. When system behavior evolves, the QA contract must be updated simultaneously to eliminate QA drift.
+
+---
+
+## 2. Taxonomy of Test Types in TestWeave
+
+TestWeave's schema (`test-truth.ts`) supports distinct test types for test cases:
+
+| Type Key | Display Name | Level / Category | Primary Purpose |
+|----------|--------------|------------------|-----------------|
+| `unit` | Unit Testing | Component / Unit | Validates isolated functions, algorithms, and standalone units. |
+| `integration` | Integration Testing | Subsystem | Verifies interfaces and data exchange between multiple modules or external services. |
+| `system` | System Testing | System | Evaluates the completely integrated software against holistic requirements. |
+| `sanity` | Sanity Testing | Build / Acceptance | Fast, targeted verification verifying that specific bug fixes or minor patches work without breaking dependent features. |
+| `smoke` | Smoke Testing | Build Verification | Broad, shallow check verifying that core capabilities function and the build is stable enough for deeper testing. |
+| `regression` | Regression Testing | Maintenance / Release | Ensures recent modifications, refactoring, or additions have not broken existing working features. |
+| `uat` | User Acceptance Testing (UAT) | Acceptance | Validates end-to-end user journeys and operational scenarios against real customer expectations. |
+| `ui` | UI Testing | Presentation | Verifies visual presentations, terminal UI prompts, banners, layouts, and error rendering. |
+| `api` | API Testing | Interface / Service | Validates programmatic contracts, MCP tool payloads, CLI command line interfaces, and JSON schema boundaries. |
+| `interface` | Interface Testing | Boundary | Verifies communication protocols and contracts between distinct software systems (e.g., IDEs, Git hooks). |
+| `component` | Component Testing | Module | Validates cohesive modular building blocks before full system assembly. |
+| `e2e` | End-to-End Testing | Flow | Validates entire lifecycles from fresh initialization to commit and push verification. |
+
+### Test Type Breakdown & Examples
+
+#### 1. Unit Testing (`unit`)
+- **Focus**: Fine-grained logic, mathematical routines, path sanitizers, and parsing routines.
+- **When to Use**: Whenever writing pure functions or isolated modules where edge cases can be exercised in isolation.
+- **Example**:
+  ```json
+  {
+    "id": "UNIT-001",
+    "title": "POSIX glob path validator rejects path traversal and absolute paths",
+    "type": "unit",
+    "priority": "critical",
+    "preconditions": ["sourcePatternSchema validator imported"],
+    "steps": [
+      {
+        "action": "Validate forbidden patterns such as ../secret, /etc/passwd, and C:\\file",
+        "data": "['../secret', '/etc/passwd', 'C:/file', 'src\\file']",
+        "expected": "Validator rejects all traversed or non-POSIX paths with descriptive schema errors"
+      }
+    ],
+    "tags": ["unit", "schema", "security"]
+  }
+  ```
+
+#### 2. Integration Testing (`integration`)
+- **Focus**: Interaction points between subsystems (e.g., Markdown parser + Contract Store, CLI + Git subsystem).
+- **When to Use**: When validating data flow across module boundaries.
+- **Example**:
+  ```json
+  {
+    "id": "INT-001",
+    "title": "Contract store updates disk and preserves outside markdown prose",
+    "type": "integration",
+    "priority": "high",
+    "preconditions": ["Initialized test-truth.md with team notes"],
+    "steps": [
+      {
+        "action": "Upsert modified test module via MarkdownContractStore",
+        "data": "store.upsert(updatedModule)",
+        "expected": "Authoritative JSON block is updated while surrounding notes and markdown headers remain intact"
+      }
+    ],
+    "tags": ["integration", "store", "markdown"]
+  }
+  ```
+
+#### 3. System Testing (`system`)
+- **Focus**: Complete, packaged application behavior in real target environments.
+- **When to Use**: Verifying end-to-end flows with real package managers, tarballs, or CLI installations.
+- **Example**:
+  ```json
+  {
+    "id": "SYS-001",
+    "title": "Cross-package-manager verification on fresh workspace",
+    "type": "system",
+    "priority": "high",
+    "preconditions": ["Built npm tarball package available"],
+    "steps": [
+      {
+        "action": "Execute testweave setup, sync, and doctor using npm, pnpm, yarn, and bun",
+        "data": "npm run check:manager -- <manager>",
+        "expected": "CLI installs cleanly, executes matching release version, and completes doctor checks"
+      }
+    ],
+    "tags": ["system", "ci", "package-managers"]
+  }
+  ```
+
+#### 4. Sanity Testing (`sanity`)
+- **Focus**: High-speed, focused check following a patch or bug fix to verify the defect is resolved.
+- **When to Use**: After committing a specific fix or hotfix before running full regression suites.
+- **Example**:
+  ```json
+  {
+    "id": "SAN-001",
+    "title": "Verify fix for CSV formula injection on export command",
+    "type": "sanity",
+    "priority": "critical",
+    "preconditions": ["TestWeave CLI available with exporter fix"],
+    "steps": [
+      {
+        "action": "Export contract containing cells starting with =, +, -, @ to CSV",
+        "data": "testweave generate --target xray --format csv",
+        "expected": "Formula characters are safely prefixed with single quotes in CSV output"
+      }
+    ],
+    "tags": ["sanity", "security", "export"]
+  }
+  ```
+
+#### 5. Smoke Testing (`smoke`)
+- **Focus**: Basic sanity and operational viability of a new build or fresh install.
+- **When to Use**: Immediately after building or packaging, prior to running detailed test suites.
+- **Example**:
+  ```json
+  {
+    "id": "SMK-001",
+    "title": "CLI basic startup, help display, and version flag",
+    "type": "smoke",
+    "priority": "critical",
+    "preconditions": ["Node.js runtime installed"],
+    "steps": [
+      {
+        "action": "Run testweave --help and testweave --version",
+        "data": "testweave --version",
+        "expected": "Prints current semantic version and exits with status 0"
+      }
+    ],
+    "tags": ["smoke", "cli"]
+  }
+  ```
+
+#### 6. Regression Testing (`regression`)
+- **Focus**: Ensuring modifications do not introduce unintended side effects in existing features.
+- **When to Use**: Regular CI builds, pull request validations, and pre-release audits.
+- **Example**:
+  ```json
+  {
+    "id": "REG-001",
+    "title": "Multi-version update command maintains agent rule integrity",
+    "type": "regression",
+    "priority": "high",
+    "preconditions": ["Workspace initialized with prior version rules and hooks"],
+    "steps": [
+      {
+        "action": "Run testweave update --yes across release transitions",
+        "data": "npx testweave update --yes",
+        "expected": "Updates skills and rules without modifying user custom rules outside TestWeave markers"
+      }
+    ],
+    "tags": ["regression", "update", "ide"]
+  }
+  ```
+
+#### 7. User Acceptance Testing (`uat`)
+- **Focus**: Practical usability, onboarding flow, and developer experience.
+- **When to Use**: Validating interactive wizards and setup onboarding flows.
+- **Example**:
+  ```json
+  {
+    "id": "UAT-001",
+    "title": "Interactive terminal setup flow with fuzzy agent selection",
+    "type": "uat",
+    "priority": "high",
+    "preconditions": ["Terminal session in empty repository"],
+    "steps": [
+      {
+        "action": "Run interactive testweave setup, search for cursor and claude, and confirm",
+        "data": "npx testweave setup",
+        "expected": "Renders clear ASCII banner, prompts for agent selection, confirms file injection, and provides next steps"
+      }
+    ],
+    "tags": ["uat", "dx", "interactive"]
+  }
+  ```
+
+#### 8. UI Testing (`ui`)
+- **Focus**: Visual terminal formatting, layout alignment, ANSI colors, spinner animations, and error highlights.
+- **When to Use**: Testing interactive CLI components, banners, and terminal feedback.
+- **Example**:
+  ```json
+  {
+    "id": "UI-001",
+    "title": "Retro ASCII banner and agent summary formatting",
+    "type": "ui",
+    "priority": "medium",
+    "preconditions": ["Standard terminal stdout"],
+    "steps": [
+      {
+        "action": "Trigger banner rendering in setup overview",
+        "data": "printSetupOverview()",
+        "expected": "Correct color gradients, aligned divider columns, and clear universal/dedicated categorization"
+      }
+    ],
+    "tags": ["ui", "terminal", "banner"]
+  }
+  ```
+
+#### 9. API Testing (`api`)
+- **Focus**: MCP (Model Context Protocol) tool signatures, inputs, and outputs over stdio.
+- **When to Use**: Validating agent tool calling interfaces and schema enforcement.
+- **Example**:
+  ```json
+  {
+    "id": "API-001",
+    "title": "MCP stdio tool interface and living-test-contract resource",
+    "type": "api",
+    "priority": "critical",
+    "preconditions": ["MCP server running via stdio transport"],
+    "steps": [
+      {
+        "action": "Send initialize request, list resources, and call upsert_test_module",
+        "data": "tools/call: upsert_test_module",
+        "expected": "Returns validated tool result with updated module count and resource URI"
+      }
+    ],
+    "tags": ["api", "mcp", "stdio"]
+  }
+  ```
+
+#### 10. Interface Testing (`interface`)
+- **Focus**: Boundary contracts with external systems (e.g. IDE config files, Git hooks, CI workflows).
+- **When to Use**: Testing IDE rule marker injection and Git pre-push hook execution.
+- **Example**:
+  ```json
+  {
+    "id": "ITF-001",
+    "title": "Pre-push hook blocks push when contract has drift",
+    "type": "interface",
+    "priority": "critical",
+    "preconditions": ["Git repository with pre-push hook installed and policy mode block"],
+    "steps": [
+      {
+        "action": "Modify source code without updating test-truth.md and run git push",
+        "data": "git push origin main",
+        "expected": "Hook exits with non-zero code, displays drift details, and prevents remote push"
+      }
+    ],
+    "tags": ["interface", "git", "hook"]
+  }
+  ```
+
+---
+
+## 3. Functional Testing Design Techniques
+
+Functional test case design relies on proven techniques to maximize test coverage while avoiding redundant test steps:
+
+### A. Equivalence Class Partitioning (ECP)
+- **Concept**: Divides the input domain of a program into partitions of equivalent data from which test cases can be derived.
+- **Application**:
+  - *Valid partition*: Positively matched workspace globs (`src/**/*.ts`).
+  - *Invalid partitions*: Leading slashes (`/etc/passwd`), backslashes on Windows (`src\\file`), parent traversal (`../outside`).
+
+### B. Boundary Value Analysis (BVA)
+- **Concept**: Focuses on boundary conditions where software defects cluster (minimum, minimum + 1, nominal, maximum - 1, maximum).
+- **Application**:
+  - Module / test title lengths: Min length (1 char), Max length (20,000 chars).
+  - Array sizes: Empty (`[]`), 1 element, 500 steps, 1,000 tests.
+
+### C. Decision Table Testing
+- **Concept**: Maps combinations of input conditions to resulting actions in a tabular matrix.
+- **Application**:
+  | Condition: Policy Mode | Condition: Working Tree | Action: testweave sync exit | Action: Report |
+  |------------------------|-------------------------|-----------------------------|----------------|
+  | `block` | Clean / Synced | Exit 0 | Synced |
+  | `block` | Drifted | Exit 1 | Blocked |
+  | `warn` | Drifted | Exit 0 | Warning logged |
+  | `warn` (`--strict`) | Drifted | Exit 1 | Blocked |
+
+### D. State Transition Testing
+- **Concept**: Tests the system across lifecycle states and validates valid and invalid transitions.
+- **Application**:
+  - States: Uninitialized $\rightarrow$ Initialized $\rightarrow$ Source Modified (Drifted) $\rightarrow$ Contract Updated $\rightarrow$ Synced & Verified.
+
+### E. Error Guessing
+- **Concept**: Anticipates common programmer and environmental mistakes based on past defect history.
+- **Application**:
+  - Symlink escapes outside workspace boundary.
+  - Formula injection via CSV export fields.
+  - Race conditions with lock files during concurrent writes.
+
+---
+
+## 4. TestWeave QA Contract Lifecycle
+
+1. **Analyze Requirements**: Understand what source code is changing and the intended user-facing or technical behavior.
+2. **Review Contract**: Read the `living-test-contract` MCP resource or `test-truth.md` to identify existing modules and tests covering the modified files.
+3. **Design Scenarios**: Apply BVA and ECP to define concrete preconditions, test steps (action, data, expected outcome), and test types.
+4. **Implement & Update**: Modify source code and immediately update the module in `test-truth.md` via `upsert_test_module` or direct edit.
+5. **Verify Drift**: Run `testweave sync` (or MCP `analyze_code_drift`) to ensure zero drift before committing.
+6. **Commit Atomically**: Commit both the source changes and the updated `test-truth.md` in the exact same Git commit.
+
+---
+
+## 5. Functional vs. Non-Functional Testing
+
+| Parameter | Functional Testing | Non-Functional Testing |
+|-----------|--------------------|------------------------|
+| **Focus** | Validates *what* the system does against functional specifications. | Validates *how well* the system performs (speed, scalability, security). |
+| **Criteria** | Business requirements, user actions, expected output. | Performance, concurrency, reliability, throughput. |
+| **Execution** | Manual QA test contracts (`test-truth.md`), integration tests, unit tests. | Load tests, stress tests, benchmark suites. |
+| **TestWeave Role** | Primary authoritative contract defining acceptance criteria. | Complementary metrics referenced via tags or notes. |
+
+---
+
+## 6. Official References
+
+- **GeeksforGeeks Functional Testing Guide**: [Functional Testing - Software Testing](https://www.geeksforgeeks.org/software-testing/software-testing-functional-testing/)
+- **TestWeave Repository**: Living Manual QA Contract specification engine and drift detector.
+````
+
 ````tests/agents-skills.test.ts
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -2594,6 +3136,7 @@ import {
 import {
   TESTWEAVE_SKILL_NAME,
   TESTWEAVE_SKILL_CONTENT,
+  TESTWEAVE_SKILL_FILES,
   TESTWEAVE_REFERENCE_NAME,
   TESTWEAVE_REFERENCE_CONTENT,
   installSkill,
@@ -2636,39 +3179,93 @@ test('agent directory defines 79 agents split into universal and additional', ()
   assert.equal(getSkillsDirForAgent('aider-desk'), '.aider-desk/skills');
 });
 
-test('TestWeave custom skill installs and validates SKILL.md and reference.md format', async (t) => {
+test('skill bundle installs authoritative documents with resolvable local links', async (t) => {
   const root = await temporaryDirectory(t);
   assert.equal(TESTWEAVE_SKILL_NAME, 'testweave');
-  assert.equal(TESTWEAVE_REFERENCE_NAME, 'reference.md');
-  assert.match(TESTWEAVE_SKILL_CONTENT, /name: testweave/);
-  assert.match(TESTWEAVE_SKILL_CONTENT, /# TestWeave QA Contract Skill/);
-  assert.match(TESTWEAVE_SKILL_CONTENT, /reference\.md/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Functional Testing/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /GeeksforGeeks/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Boundary Value Analysis/);
-  assert.match(TESTWEAVE_REFERENCE_CONTENT, /Equivalence Class Partitioning/);
-
+  assert.equal(TESTWEAVE_REFERENCE_NAME, 'references/functional-testing.md');
   assert.equal(await hasSkill(root, '.agents/skills'), false);
   const installedFile = await installSkill(root, '.agents/skills');
+  const installedRoot = path.dirname(installedFile);
   assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(installedFile, 'utf8'), TESTWEAVE_SKILL_CONTENT);
+  assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
+  assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
+    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/init.md', 'commands/mcp.md',
+    'commands/scan.md', 'commands/sync.md', 'commands/update.md',
+    'references/contract-schema.md', 'references/functional-testing.md',
+  ]);
+  assert.match(TESTWEAVE_SKILL_CONTENT, /^---\nname: testweave\ndescription: [^\n]+\n---\n/);
+  for (const entry of TESTWEAVE_SKILL_FILES) {
+    const installed = path.join(installedRoot, entry.path);
+    assert.equal(await readFile(installed, 'utf8'), await readFile(new URL('../skills/testweave/' + entry.path, import.meta.url), 'utf8'));
+    for (const link of entry.content.matchAll(/\]\(([^)]+\.md)\)/g)) {
+      const target = path.resolve(path.dirname(installed), link[1]!);
+      const relative = path.relative(installedRoot, target);
+      assert.ok(!relative.startsWith('..') && !path.isAbsolute(relative), 'Link escapes installed bundle: ' + link[1]);
+      await readFile(target, 'utf8');
+    }
+  }
+});
 
-  const content = await readFile(installedFile, 'utf8');
-  assert.match(content, /description: Keep manual QA contracts aligned/);
-  assert.match(content, /get_contract/);
-  assert.match(content, /upsert_test_module/);
-  assert.match(content, /testweave sync/);
+test('skill refresh restores missing and modified documents while retaining user files', async (t) => {
+  const root = await temporaryDirectory(t);
+  const installed = path.dirname(await installSkill(root, '.agents/skills'));
+  const custom = path.join(installed, 'notes.md');
+  await writeFile(custom, 'Team-specific notes');
+  const removed = path.join(installed, 'commands/scan.md');
+  await unlink(removed);
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+  await installSkill(root, '.agents/skills');
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  await writeFile(path.join(installed, 'references/contract-schema.md'), 'Old schema');
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+  await installSkill(root, '.agents/skills');
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(custom, 'utf8'), 'Team-specific notes');
+});
 
-  const refFile = path.join(path.dirname(installedFile), 'reference.md');
-  const refContent = await readFile(refFile, 'utf8');
-  assert.match(refContent, /Unit Testing/);
-  assert.match(refContent, /Regression Testing/);
-  assert.match(refContent, /Integration Testing/);
-  assert.match(refContent, /Smoke Testing/);
-  assert.match(refContent, /System Testing/);
-  assert.match(refContent, /Sanity Testing/);
-  assert.match(refContent, /User Acceptance Testing \(UAT\)/);
-  assert.match(refContent, /UI Testing/);
-  assert.match(refContent, /API Testing/);
+test('skill installation rejects linked resource directories before writing bundle files', async (t) => {
+  const root = await temporaryDirectory(t);
+  const outside = await temporaryDirectory(t);
+  const installed = path.join(root, '.agents/skills/testweave');
+  await mkdir(installed, { recursive: true });
+  const outsideFile = path.join(outside, 'scan.md');
+  await writeFile(outsideFile, 'Outside document');
+  try { await symlink(outside, path.join(installed, 'commands'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) { t.skip('Symlink permission unavailable'); return; }
+    throw error;
+  }
+  await assert.rejects(installSkill(root, '.agents/skills'), /outside the workspace/);
+  assert.equal(await readFile(outsideFile, 'utf8'), 'Outside document');
+  await assert.rejects(readFile(path.join(installed, 'SKILL.md')), { code: 'ENOENT' });
+  assert.equal(await hasSkill(root, '.agents/skills'), false);
+});
+
+test('doctor detects damaged nested skills alongside intact IDE rules and repairs the full bundle', async (t) => {
+  const root = await temporaryDirectory(t);
+  await exec(process.execPath, [cliPath, '--cwd', root, 'setup', '--yes', '--no-hook']);
+  const baseline = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  const claude = path.join(root, '.claude/skills/testweave');
+  const universal = path.join(root, '.agents/skills/testweave');
+  await unlink(path.join(claude, 'commands/scan.md'));
+  await writeFile(path.join(universal, 'references/contract-schema.md'), 'Stale schema');
+  await writeFile(path.join(claude, 'notes.md'), 'Keep team notes');
+  assert.equal(await hasSkill(root, '.claude/skills'), false);
+  const failing = await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--json']).catch((error: { code: number; stdout: string }) => {
+    assert.equal(error.code, 1);
+    return { stdout: error.stdout };
+  });
+  const diagnostics = JSON.parse(failing.stdout) as { id: string; ok: boolean }[];
+  assert.ok(diagnostics.some((check) => check.id === 'ide:claude' && !check.ok));
+  assert.ok(diagnostics.some((check) => check.id === 'ide:universal' && !check.ok));
+  await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--fix']);
+  const repaired = await exec(process.execPath, [cliPath, '--cwd', root, 'doctor', '--json']);
+  assert.ok((JSON.parse(repaired.stdout) as { ok: boolean }[]).every((check) => check.ok));
+  assert.equal(await hasSkill(root, '.claude/skills'), true);
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), baseline);
+  assert.equal(await readFile(path.join(claude, 'notes.md'), 'utf8'), 'Keep team notes');
 });
 
 test('installIdeRules installs custom skill and agent rules across multiple agent targets', async (t) => {
@@ -2736,7 +3333,8 @@ test('compiled CLI supports update command to refresh rules and skills', async (
   const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
   const skillContent = await readFile(skillFile, 'utf8');
   assert.match(skillContent, /name: testweave/);
-  assert.match(skillContent, /testweave update/);
+  assert.match(skillContent, /commands\/update\.md/);
+  assert.equal(await hasSkill(root, '.agents/skills'), true);
 
   const freshRoot = await temporaryDirectory(t);
   const freshUpdate = await exec(process.execPath, [cliPath, '--cwd', freshRoot, 'update', '--yes']);
@@ -2846,6 +3444,93 @@ test('workspace paths reject traversal and symlink escapes', async (t) => {
   assert.equal(await workspacePath(root, 'exports/new.csv'), path.join(root, 'exports/new.csv'));
   await symlink(outside, path.join(root, 'test-truth.md'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(new MarkdownContractStore(root).readMarkdown(), /symlink/);
+});
+````
+
+````tests/doctor-output.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { temporaryDirectory } from './helpers.js';
+import type { Diagnostic } from '../src/engine/doctor.js';
+
+const exec = promisify(execFile);
+const cliPath = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+const environment = { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' };
+
+async function launch(root: string, args: string[]) {
+  try {
+    const result = await exec(process.execPath, [cliPath, '--cwd', root, ...args], { env: environment });
+    return { ...result, code: 0 };
+  } catch (error) {
+    const result = error as { stdout: string; stderr: string; code: number };
+    if (typeof result.code !== 'number') throw error;
+    return result;
+  }
+}
+
+test('doctor renders aligned plain diagnostics and an accurate healthy summary', async (t) => {
+  const root = await temporaryDirectory(t);
+  assert.equal((await launch(root, ['setup', '--yes', '--no-hook'])).code, 0);
+  const human = await launch(root, ['doctor']);
+  const json = await launch(root, ['doctor', '--json']);
+  assert.equal(human.code, 0);
+  assert.equal(json.code, 0);
+  assert.match(human.stdout, /testweave doctor  diagnostics/);
+  assert.match(human.stdout, /Workspace\s+/);
+  assert.ok(human.stdout.includes(path.basename(root)));
+  assert.match(human.stdout, /Node\.js runtime\s+v\d+/);
+  assert.match(human.stdout, /Skill bundle\s+10 documents/);
+  assert.match(human.stdout, /QA contract\s+OK\s+.*test-truth\.md/);
+  assert.match(human.stdout, /Claude Code\s+OK\s+.*CLAUDE\.md.*\.mcp\.json.*\.claude\/skills\/testweave/);
+  assert.match(human.stdout, /Pre-push hook\s+disabled in project configuration/);
+  assert.match(human.stdout, /Everything looks good\./);
+  assert.doesNotMatch(human.stdout, /\x1b\[/);
+  const checks = JSON.parse(json.stdout) as Diagnostic[];
+  assert.ok(checks.every((check) => check.ok));
+  assert.ok(checks.every((check) => Object.keys(check).sort().join(',') === 'id,message,ok,repairable'));
+  assert.ok(human.stdout.includes(checks.length + '/' + checks.length + ' checks passed'));
+  const rows = human.stdout.split('\n').filter((line) => /^    .*\sOK\s/.test(line));
+  assert.equal(rows.length, checks.length);
+  assert.equal(new Set(rows.map((line) => line.indexOf('OK'))).size, 1);
+  assert.doesNotMatch(json.stdout, /diagnostics|Summary:|\x1b\[/);
+});
+
+test('doctor failures preserve exit codes and distinguish automatic from manual repair', async (t) => {
+  const root = await temporaryDirectory(t);
+  assert.equal((await launch(root, ['setup', '--yes', '--no-hook'])).code, 0);
+  await unlink(path.join(root, '.claude/skills/testweave/commands/scan.md'));
+  await writeFile(path.join(root, 'test-truth.md'), '# Invalid contract');
+  const human = await launch(root, ['doctor']);
+  const json = await launch(root, ['doctor', '--json']);
+  assert.equal(human.code, 1);
+  assert.equal(json.code, 1);
+  assert.match(human.stdout, /QA contract\s+FAIL/);
+  assert.match(human.stdout, /Claude Code\s+FAIL/);
+  assert.match(human.stdout, /Run testweave doctor --fix/);
+  assert.match(human.stdout, /Some problems require manual repair/);
+  assert.doesNotMatch(human.stdout, /Everything looks good/);
+  const checks = JSON.parse(json.stdout) as Diagnostic[];
+  const passed = checks.filter((check) => check.ok).length;
+  assert.ok(human.stdout.includes(passed + '/' + checks.length + ' checks passed'));
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), '# Invalid contract');
+});
+
+test('doctor --fix displays the repaired results and keeps contract content', async (t) => {
+  const root = await temporaryDirectory(t);
+  assert.equal((await launch(root, ['setup', '--yes', '--no-hook'])).code, 0);
+  const baseline = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  await unlink(path.join(root, '.agents/skills/testweave/commands/scan.md'));
+  const fixed = await launch(root, ['doctor', '--fix']);
+  assert.equal(fixed.code, 0);
+  assert.match(fixed.stdout, /Universal agents\s+OK/);
+  assert.match(fixed.stdout, /Everything looks good/);
+  assert.doesNotMatch(fixed.stdout, /FAIL|need.*attention/);
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), baseline);
 });
 ````
 
@@ -3617,6 +4302,194 @@ test('PnP installations without an ESM loader still preserve the CJS loader', ()
 });
 ````
 
+````tests/scan.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, readFile, writeFile, symlink, unlink } from 'node:fs/promises';
+import path from 'node:path';
+import picomatch from 'picomatch';
+import { simpleGit } from 'simple-git';
+import { scanProject } from '../src/engine/scan.js';
+import { runScan } from '../src/cli/scan.js';
+import { createContext } from '../src/cli/context.js';
+import { createProgram } from '../src/cli/index.js';
+import { MarkdownContractStore } from '../src/engine/store.js';
+import { createTestTruth, testTruthSchema } from '../src/schema/test-truth.js';
+import { serializeTestTruth } from '../src/engine/markdown.js';
+import { contractFixture, temporaryDirectory } from './helpers.js';
+
+async function existingProject(root: string): Promise<void> {
+  await mkdir(path.join(root, 'src/auth'), { recursive: true });
+  await mkdir(path.join(root, 'tests'), { recursive: true });
+  await writeFile(path.join(root, 'project-context.md'), '# Requirements\nAs a registered user, I complete the auth login journey.\n');
+  await writeFile(path.join(root, 'README.md'), '# Existing application\nUser workflow: auth login redirects to dashboard.\n');
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export function login() {}\nexport const logout = () => {};\napp.post("/login", login);\n');
+  await writeFile(path.join(root, 'tests/login.test.ts'), 'test("login succeeds", () => {});');
+}
+
+test('scan previews context first, functions, routes, journeys and automated tests without writes', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  const output: string[] = [];
+  const context = await createContext(root, { log: (value) => output.push(value), error: (value) => output.push(value) });
+  await runScan(context, { json: true });
+  const report = JSON.parse(output[0]!);
+  assert.equal(report.context[0].file, 'project-context.md');
+  assert.ok(report.context.some((entry: { file: string }) => entry.file === 'package.json'));
+  const source = report.files.find((entry: { file: string }) => entry.file === 'src/auth/login.ts');
+  assert.deepEqual(source.functions, ['login', 'logout']);
+  assert.deepEqual(source.routes, ['/login']);
+  assert.deepEqual(report.files.find((entry: { file: string }) => entry.file === 'tests/login.test.ts').automatedTests, ['login succeeds']);
+  assert.ok(report.modules.some((module: { tests: { tags: string[] }[] }) => module.tests.some((entry) => entry.tags.includes('journey'))));
+  assert.ok(report.modules.some((module: { tests: { tags: string[] }[] }) => module.tests.some((entry) => entry.tags.includes('automated'))));
+  assert.equal(report.applied, 0);
+  testTruthSchema.parse({ ...createTestTruth('Existing'), modules: report.modules });
+  await assert.rejects(readFile(path.join(root, 'test-truth.md')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(root, '.testweave.json')), { code: 'ENOENT' });
+});
+
+test('apply creates a baseline and rescans preserve modules and IDs byte for byte', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  const context = await createContext(root, { log() {}, error() {} });
+  await runScan(context, { apply: true });
+  const baseline = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  const contract = await context.store.read();
+  assert.equal(contract.modules.length, 2);
+  assert.ok(contract.modules.every((module) => module.tests.every((entry) => entry.tags.includes('needs-review'))));
+  await runScan(context, { apply: true });
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), baseline);
+  await writeFile(path.join(root, 'src/auth/register.ts'), 'export function register() {}');
+  await runScan(context, { apply: true });
+  const updated = await context.store.read();
+  assert.deepEqual(updated.modules.slice(0, 2), contract.modules);
+  assert.equal(updated.modules.length, 3);
+  assert.ok(updated.modules[2]!.paths.includes('src/auth/register.ts'));
+});
+
+test('apply preserves authored scenarios, policy and surrounding markdown; respects tracking exclusions', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  const contract = contractFixture();
+  contract.policy.ignoreGlobs.push('tests/**');
+  await writeFile(path.join(root, 'test-truth.md'), '# Team notes\n' + serializeTestTruth(contract) + '\nKeep this footer.\n');
+  await mkdir(path.join(root, 'src/billing'));
+  await writeFile(path.join(root, 'src/billing/pay.ts'), 'export function pay() {}');
+  const context = await createContext(root, { log() {}, error() {} });
+  await runScan(context, { apply: true });
+  const updated = await context.store.read();
+  assert.deepEqual(updated.modules[0], contract.modules[0]);
+  assert.deepEqual(updated.policy, contract.policy);
+  assert.equal(updated.modules.length, 2);
+  const markdown = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  assert.ok(markdown.startsWith('# Team notes'));
+  assert.ok(markdown.endsWith('Keep this footer.\n'));
+});
+
+test('Git scan excludes ignored untracked files, skips deleted tracked files and includes untracked source', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  const git = simpleGit(root);
+  await git.init();
+  await writeFile(path.join(root, '.gitignore'), 'scratch/\n');
+  await git.add(['src/auth/login.ts']);
+  await unlink(path.join(root, 'src/auth/login.ts'));
+  await mkdir(path.join(root, 'scratch'));
+  await writeFile(path.join(root, 'scratch/private.ts'), 'export function secret() {}');
+  await writeFile(path.join(root, 'src/auth/new.ts'), 'export function fresh() {}');
+  const report = await scanProject(root, createTestTruth('Existing'));
+  assert.ok(report.files.some((entry) => entry.file === 'src/auth/new.ts'));
+  assert.ok(!report.files.some((entry) => entry.file.startsWith('scratch/')));
+  assert.ok(report.warnings.some((warning) => warning.includes('missing file')));
+});
+
+test('dynamic route filenames produce literal path coverage, and unrelated files remain uncovered', async (t) => {
+  const root = await temporaryDirectory(t);
+  await mkdir(path.join(root, 'app/users/[id]'), { recursive: true });
+  await writeFile(path.join(root, 'app/users/[id]/page.tsx'), 'export default function Profile() {}');
+  const report = await scanProject(root, createTestTruth('Routes'));
+  assert.equal(report.modules.length, 1);
+  const matches = picomatch(report.modules[0]!.paths, { dot: true });
+  assert.ok(matches('app/users/[id]/page.tsx'));
+  assert.ok(!matches('app/users/i/page.tsx'));
+  assert.deepEqual(report.files[0]!.routes, ['app/users/[id]/page.tsx']);
+});
+
+test('custom context is prioritized; missing and outside context fail before any contract write', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  await mkdir(path.join(root, 'docs'));
+  await writeFile(path.join(root, 'docs/product.md'), 'User journey: auth login.');
+  const report = await scanProject(root, createTestTruth('Existing'), 'docs/product.md');
+  assert.equal(report.context[0]!.file, 'docs/product.md');
+  const context = await createContext(root, { log() {}, error() {} });
+  await assert.rejects(runScan(context, { apply: true, context: '../outside.md' }), /inside the workspace/);
+  await assert.rejects(runScan(context, { apply: true, context: 'missing.md' }), /Cannot read selected/);
+  await assert.rejects(readFile(path.join(root, 'test-truth.md')), { code: 'ENOENT' });
+});
+
+test('scan skips dependency output, environment files, large files and binary files; reports absent context', async (t) => {
+  const root = await temporaryDirectory(t);
+  await mkdir(path.join(root, 'node_modules'));
+  await writeFile(path.join(root, 'node_modules/private.ts'), 'export function secret() {}');
+  await writeFile(path.join(root, '.env'), 'SECRET=private');
+  await writeFile(path.join(root, 'huge.ts'), 'x'.repeat(256_001));
+  await writeFile(path.join(root, 'binary.ts'), Buffer.from([0, 1, 2]));
+  await writeFile(path.join(root, 'main.py'), 'def main(): pass\ndef test_main(): pass');
+  const report = await scanProject(root, createTestTruth('Existing'));
+  assert.deepEqual(report.files.map((entry) => entry.file), ['main.py']);
+  assert.ok(report.warnings.some((warning) => warning.includes('No project context')));
+  assert.ok(report.warnings.some((warning) => warning.includes('256 KB')));
+  assert.ok(report.warnings.some((warning) => warning.includes('binary')));
+});
+
+test('empty scan is a no-op, and malformed contracts are preserved on failure', async (t) => {
+  const root = await temporaryDirectory(t);
+  const context = await createContext(root, { log() {}, error() {} });
+  await runScan(context, { apply: true });
+  await assert.rejects(readFile(path.join(root, 'test-truth.md')), { code: 'ENOENT' });
+  await existingProject(root);
+  await writeFile(path.join(root, 'test-truth.md'), '# Invalid contract');
+  await assert.rejects(runScan(context, { apply: true }), /exactly one/);
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), '# Invalid contract');
+});
+
+test('append rejects stale scan snapshots and duplicate IDs without altering the contract', async (t) => {
+  const root = await temporaryDirectory(t);
+  await existingProject(root);
+  const store = new MarkdownContractStore(root);
+  const contract = createTestTruth('Existing');
+  await store.initialize(contract);
+  const report = await scanProject(root, contract);
+  await store.upsert(report.modules[0]!);
+  const current = await store.readMarkdown();
+  await assert.rejects(store.append(report.modules, contract), /changed during scan/);
+  assert.equal(await store.readMarkdown(), current);
+  await assert.rejects(store.append([report.modules[0]!], await store.read()), /Duplicate module/);
+  assert.equal(await store.readMarkdown(), current);
+});
+
+test('scan command options are exposed by the CLI', () => {
+  const scan = createProgram().commands.find((command) => command.name() === 'scan');
+  assert.ok(scan);
+  assert.deepEqual(scan.options.map((option) => option.long), ['--context', '--apply', '--json']);
+});
+
+test('linked context outside the workspace is rejected and directory junctions are skipped', async (t) => {
+  const root = await temporaryDirectory(t);
+  const outside = await temporaryDirectory(t);
+  await writeFile(path.join(outside, 'context.md'), 'Outside private documentation');
+  try { await symlink(outside, path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) { t.skip('Symlink permission unavailable'); return; }
+    throw error;
+  }
+  await assert.rejects(scanProject(root, createTestTruth('Existing'), 'linked/context.md'), /outside the workspace/);
+  assert.equal((await scanProject(root, createTestTruth('Existing'))).files.length, 0);
+});
+````
+
 ````scripts/bundle-source.mjs
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -3634,7 +4507,7 @@ async function walk(directory) {
   return files.sort();
 }
 const files = ['package.json', 'tsconfig.json', 'tsconfig.test.json', '.gitignore',
-  ...await walk('src'), ...await walk('tests'), ...await walk('scripts'), ...await walk('.github/workflows')];
+  ...await walk('src'), ...await walk('skills'), ...await walk('tests'), ...await walk('scripts'), ...await walk('.github/workflows')];
 const fence = String.fromCharCode(96).repeat(4);
 const blocks = await Promise.all(files.map(async (file) =>
   fence + file + '\n' + (await readFile(path.join(root, file), 'utf8')).trimEnd() + '\n' + fence));

@@ -14,7 +14,7 @@ async function walk(directory) {
   return files.sort();
 }
 const files = ['package.json', 'tsconfig.json', 'tsconfig.test.json', '.gitignore',
-  ...await walk('src'), ...await walk('tests'), ...await walk('scripts'), ...await walk('.github/workflows')];
+  ...await walk('src'), ...await walk('skills'), ...await walk('tests'), ...await walk('scripts'), ...await walk('.github/workflows')];
 const fence = String.fromCharCode(96).repeat(4);
 const blocks = await Promise.all(files.map(async (file) =>
   fence + file + '\n' + (await readFile(path.join(root, file), 'utf8')).trimEnd() + '\n' + fence));

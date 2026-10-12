@@ -1,12 +1,13 @@
 # TestWeave
 
 <p align="center">
-  <strong>The living manual QA contract engine for software teams and AI coding agents.</strong>
+  <strong>Keep manual QA scenarios in step with your code.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml"><img src="https://github.com/AlexisRellon/TestWeave/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://www.npmjs.com/package/testweave"><img src="https://img.shields.io/npm/v/testweave.svg" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/testweave"><img src="https://img.shields.io/npm/dt/testweave.svg" alt="npm total downloads" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node.js 20+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/AI%20Agents-79%2B%20Supported-8A2BE2" alt="79+ AI Agents" />
@@ -17,14 +18,18 @@
 
 ## Overview
 
-**TestWeave** binds manual QA specifications directly to source code inside your Git repository in `test-truth.md`. It turns static, neglected test documentation into an actively enforced contract that evolves alongside your codebase.
+**TestWeave** is a CLI and local MCP server that links source files to manual QA scenarios in a versioned `test-truth.md` contract. When a developer or AI agent changes a tracked file, TestWeave checks whether the affected module's test content changed too. Run it while coding, enforce it before a Git push, or add it to pull request checks.
 
-- **Zero QA Drift**: Detects whenever source code modifications alter behavior without corresponding manual QA scenario updates.
-- **Git Pre-Push Enforcement**: Blocks stale or uncovered commits before they ever leave a developer's workstation.
+For example, changing `src/auth/login.ts` should prompt a review of login scenarios. If that file belongs to the `authentication` module and its contract content is unchanged, TestWeave reports `stale-module`. Update the relevant actions and expected results, then commit the contract alongside the code.
+
+- **QA Drift Detection**: Flags tracked source changes that lack module coverage or accompanying contract updates.
+- **Git Pre-Push Enforcement**: Blocks pushes with stale or uncovered changes when blocking policy is active.
 - **79+ AI Coding Agent Support**: Automatically provisions standardized `SKILL.md` agent skills and IDE rules across **23 Universal agents** (`.agents/skills`) and **56 Dedicated agents** (`.claude/skills`, `.windsurf/skills`, etc.).
 - **Native Model Context Protocol (MCP)**: Local stdio MCP server enabling AI agents (Cursor, Claude, Copilot, Antigravity, etc.) to inspect contracts, detect drift, and upsert test cases safely.
 - **Enterprise QA Exports**: One-command export to **Jira**, **Xray**, and **Zephyr Scale** (in both CSV and JSON formats).
 - **Universal Package Manager Support**: Works seamlessly across **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (PnP)**, and **Bun**.
+
+TestWeave checks file coverage and contract changes. A passing check establishes documentation alignment; reviewing scenario quality and executing tests remain part of your QA workflow. The core CLI, drift checks, MCP tools, and exports require no AI API key. Optional AI drafting sends supplied context to your selected provider.
 
 ```mermaid
 flowchart LR
@@ -38,7 +43,8 @@ flowchart LR
         Contract --> Drift
         Drift -->|git push / testweave sync| Gate{Contract Up-to-Date?}
         Gate -->|Yes| Push[✔ Git Push Allowed]
-        Gate -->|No| Block[✖ Blocked: QA Drift Detected]
+        Gate -->|No: block policy| Block[✖ Blocked: QA Drift Detected]
+        Gate -->|No: warn policy| Warn[Warning: Push Allowed]
     end
 
     subgraph Ecosystem
@@ -49,7 +55,27 @@ flowchart LR
 
 ---
 
+**Start here:** [Quickstart](#quickstart) · [Everyday workflows](#everyday-workflows) · [Contract format](#the-living-qa-contract-test-truthmd) · [Drift rules](#drift-semantics--git-enforcement) · [MCP](#model-context-protocol-mcp-server) · [CLI reference](#cli-command-reference) · [Troubleshooting](#troubleshooting)
+
+## Who it helps
+
+| Your workflow | What TestWeave adds |
+| :--- | :--- |
+| Developers shipping behavior changes | A reminder to revise affected manual scenarios in the same change. |
+| QA teams maintaining regression suites | Versioned actions, test data, and expected results, with exports for test management tools. |
+| Teams using AI coding agents | Repository skills and MCP tools for reading and updating the QA contract during implementation. |
+| Reviewers and maintainers | A Git or CI gate that identifies missing coverage and stale module content. |
+
 ## Quickstart
+
+Requires **Node.js 20+**. Drift checks and pre-push enforcement require a Git repository and a resolvable comparison revision.
+
+Install a project dependency to keep hooks and MCP registrations tied to an installed CLI:
+
+```sh
+npm install --save-dev testweave
+npx --no-install testweave init
+```
 
 ### 1. Initialize TestWeave in your project
 
@@ -73,6 +99,38 @@ This bootstraps:
 3. Configured IDE rules (`.cursorrules`, `CLAUDE.md`, `.windsurfrules`, `.github/instructions/testweave.instructions.md`, `.vscode/mcp.json`).
 4. Custom agent skill definitions (`<skillsDir>/testweave/SKILL.md`) for detected and selected agents.
 5. Project MCP configuration for selected [verified clients](docs/mcp-providers.md), including Codex, Gemini CLI, OpenCode, Kilo Code, Cursor, Claude Code, and VS Code. Existing servers and comments are preserved; invalid configurations are reported without overwriting them.
+
+Setup creates an empty `modules` array for a new contract. Before relying on the gate, register your application's modules and scenarios using the [contract example](#the-living-qa-contract-test-truthmd). Adjust `sourceGlobs` to the files you want tracked and each module's `paths` to the files it covers. Commit this initial contract as your baseline.
+
+### Adopt an existing project
+
+After installing TestWeave in a project already in development, scan its existing behavior:
+
+```sh
+npx --no-install testweave scan
+npx --no-install testweave scan --context docs/product-context.md --json
+npx --no-install testweave scan --apply
+```
+
+Scan reads available project context before implementation files: project-context, requirements, PRD, README, AGENTS, CLAUDE, architecture, user-journey documents and package manifests. Use `--context` to prioritize another document. It inventories source files, function declarations, route/CLI entry points, documented journey candidates, and existing automated test names. Discovery is local and uses filename and text heuristics; it requires no AI provider or API key.
+
+The default is a read-only preview. `--json` includes context text, source evidence and validated module drafts. `--apply` creates a contract if needed and adds drafts for uncovered files tracked by its policy. It preserves existing modules, IDs, policy and surrounding Markdown. Repeating it on unchanged files adds nothing. Setup is still needed to install agent integrations and hooks.
+
+Review the `needs-review` drafts, replace TODO inputs and outcomes with specific acceptance criteria from project context, and commit the baseline. Scan groups files by directory, suggests success/failure/boundary scenarios, links matching documented journeys and references discovered automated suites. It does not execute tests or certify coverage. Git projects respect standard Git ignore rules for untracked files; non-Git projects use built-in dependency/build exclusions. Linked files, binaries and files over 256 KB are skipped; scans exceeding 10,000 files fail with guidance to narrow scope.
+
+### Your first behavior change
+
+1. Read the module covering the source file you plan to edit.
+2. Change the code and revise the module's scenarios in `test-truth.md`.
+3. Run the check against your branch's upstream, or an explicit baseline:
+
+   ```sh
+   npx --no-install testweave sync --base origin/main --strict
+   ```
+
+4. Resolve reported drift, then commit the code and contract together. The pre-push hook checks the committed snapshot being pushed.
+
+Use a revision available in your repository in place of `origin/main`. A branch without an upstream must supply `--base` for a working-tree check.
 
 ### 2. Update agent skills, IDE rules, and hooks
 
@@ -186,6 +244,64 @@ npm install --save-dev @alexisrellon/testweave
 
 ---
 
+## Everyday workflows
+
+### Review changes before committing
+
+```sh
+# Compare current files against the branch's upstream
+npx --no-install testweave sync
+
+# Compare against a specific revision and return a JSON report
+npx --no-install testweave sync --base origin/main --strict --json
+```
+
+The report includes `base`, `target`, `changedFiles`, `issues`, `mode`, and `blocked`. Match each issue to its module and update scenarios that describe the changed behavior. A cosmetic rename or path edit alone does not clear a stale module.
+
+### Ask your coding agent to maintain the contract
+
+After selecting your agent during setup, use a prompt such as:
+
+> Read `test-truth.md`, identify the module covering `src/auth/login.ts`, implement the login change, and update its success, failure, and boundary scenarios. Preserve existing test IDs and check drift before finishing.
+
+Skills provide the workflow instructions. With MCP configured, the agent can read the `living-test-contract` resource, call `analyze_code_drift`, and submit a complete module through `upsert_test_module`. An upsert replaces the module with the same ID, so include all tests you intend to retain.
+
+### Add an agent or refresh an existing setup
+
+```sh
+npx --no-install testweave update
+npx --no-install testweave doctor
+```
+
+Use interactive `update` to change selected integrations, or `update --yes` to refresh the existing/default selections. Restart your MCP client after changing its registration.
+
+### Hand scenarios to your QA team
+
+```sh
+npx --no-install testweave generate --target xray --format csv --output qa/xray-tests.csv
+```
+
+Review and import the generated artifact in your QA platform. Exports contain test definitions; they do not record execution results or upload cases automatically. Omit `--output` to print to stdout. Choose a new output filename for each export because existing files are not overwritten.
+
+## Workspace files
+
+| File or location | Purpose |
+| :--- | :--- |
+| `test-truth.md` | Authoritative contract: tracking policy, module paths, and manual test definitions. |
+| `.testweave.json` | Setup selections: configuration version, integrations, and hook preference. |
+| `<skillsDir>/testweave/SKILL.md` | Shared QA rules and links to task-specific guides. |
+| `<skillsDir>/testweave/commands/*.md` | Guidance for scan, init/setup, update, sync, doctor, generate and MCP. |
+| `<skillsDir>/testweave/references/*.md` | Contract schema and functional testing guidance loaded when needed. |
+| IDE instruction files | Managed TestWeave rules alongside your existing instructions. |
+| Client MCP configuration | Project registration for selected verified MCP clients. |
+| Git pre-push hook / Husky integration | Runs checks on committed revisions before a push. |
+
+The package's `skills/testweave/` directory is the authoritative skill bundle. Setup and update install its Markdown documents; doctor detects missing or modified managed files and `doctor --fix` restores them. Additional user files are preserved.
+
+Version the contract and appropriate project configuration with your source. Put QA tracking policy in `test-truth.md`; `.testweave.json` records installation choices.
+
+---
+
 ## The Living QA Contract (`test-truth.md`)
 
 The authoritative contract is housed in a single top-level fenced code block labeled ````json testweave````. Any prose, Markdown headers, or comments outside this block are preserved during automated updates.
@@ -209,6 +325,7 @@ The authoritative contract is housed in a single top-level fenced code block lab
         {
           "id": "AUTH-001",
           "title": "Registered user logs in with valid credentials",
+          "type": "smoke",
           "priority": "high",
           "preconditions": [
             "User account exists and email is verified"
@@ -225,6 +342,7 @@ The authoritative contract is housed in a single top-level fenced code block lab
         {
           "id": "AUTH-002",
           "title": "Login fails with invalid credentials",
+          "type": "regression",
           "priority": "medium",
           "preconditions": [],
           "steps": [
@@ -258,13 +376,20 @@ The authoritative contract is housed in a single top-level fenced code block lab
   - `tests`: Array of test definitions.
     - `id`: Globally unique test ID across the entire contract (e.g., `AUTH-001`).
     - `title`: Clear test scenario title.
+    - `type`: `unit`, `integration`, `system`, `sanity`, `smoke`, `regression`, `uat`, `ui`, `api`, `interface`, `component`, or `e2e`. Defaults to `regression` when omitted.
     - `priority`: `'low'` | `'medium'` | `'high'` | `'critical'`.
     - `preconditions`: List of prerequisite conditions.
     - `steps`: Array of manual test steps:
       - `action`: What the tester or runner executes.
       - `data`: Inputs, parameters, or test data.
       - `expected`: The verified observable outcome.
-    - `tags`: Optional searchable labels (e.g., `["smoke", "regression"]`).
+    - `tags`: Array of searchable labels (e.g., `["auth", "negative"]`); use `[]` when none apply.
+
+### Authoring scenarios
+
+Keep module IDs and test IDs stable so reviewers and exports can track the same cases over time. Give each module at least one test and each test at least one step. Use observable expected results, representative input data, and explicit preconditions. Include success, failure, and boundary cases for the behavior you cover.
+
+Paths use positive, workspace-relative globs with forward slashes, including on Windows. Use `src/auth/**` rather than an absolute path or a backslash path. Store exclusions in `ignoreGlobs` rather than using negated patterns.
 
 ---
 
@@ -279,13 +404,23 @@ TestWeave enforces manual QA synchronization with strict, conservative rules:
    - An uncommitted or dirty `test-truth.md` cannot make a stale committed push pass.
 3. **Module Coverage Requirements**:
    - Every modified source file matching `sourceGlobs` must map to at least one registered module.
-   - Every affected module must have substantive test modifications (updated steps, actions, expectations, or descriptions). Reordering test cases, touching paths only, or renaming modules does not clear drift.
+   - Every existing affected module must have a change to its description or test content. Reordering test cases, touching paths only, or renaming modules does not clear drift. Reviewers must assess whether the content change adequately covers the source change.
 4. **Anti-Evasion Policy**:
    - Evaluates both baseline and proposed policies: a branch cannot bypass drift checks by weakening its ignore globs or changing `mode: "block"` to `mode: "warn"`.
 5. **Exit Codes**:
    - `0`: Success (or warning-mode drift).
    - `1`: Blocked drift, failed diagnostics, or CLI usage error.
    - `2`: Schema validation or operational error.
+
+### Understanding drift reports
+
+| Issue | Meaning | Resolution |
+| :--- | :--- | :--- |
+| `unmapped` | A changed tracked file matches no module in either the baseline or current contract. | Add a module with matching paths and relevant scenarios, or extend the appropriate module. |
+| `stale-module` | Source covered by an existing module changed while its description and test content stayed the same. | Revise the affected scenarios to describe the change, including regression expectations. |
+| `removed-module` | A module covering changed files was deleted from the proposed contract. | Retain the module and document the retired behavior. |
+
+The checker uses the union of baseline and current tracking rules and module paths. When a file matches multiple modules, each affected module is evaluated. Even a refactor of a tracked file prompts a contract update; document the regression checks that confirm the expected behavior.
 
 ---
 
@@ -479,6 +614,7 @@ npx testweave generate --provider anthropic --model claude-3-5-sonnet-20241022 -
 - **OpenAI**: Enforces the contract schema via Structured Outputs.
 - **Anthropic**: Enforces the contract schema via tool schema constraints.
 - Generated modules are validated with Zod before output. Drafting never silently alters `test-truth.md`—you review and apply drafts explicitly.
+- Only the supplied context file and, when requested, the selected existing module are sent to the provider. API credentials are read from the corresponding environment variable.
 
 ---
 
@@ -490,7 +626,7 @@ Usage: testweave [options] [command]
 Options:
   --cwd <directory>    Target project directory (default: current working directory or Git root)
   -h, --help           Display help for command
-  -v, --version        Output current version
+  -V, --version        Output current version
 
 Commands:
   init, setup [options]
@@ -505,9 +641,16 @@ Commands:
     --base <ref>       Git revision baseline to compare against (default: upstream tracking branch)
     --strict           Force blocking mode (exit code 1) even if policy is set to "warn"
     --json             Output drift report as machine-readable JSON
+    --pre-push         Read Git ref updates from stdin (used by the installed hook)
 
   doctor [options]
-    --fix              Automatically repair missing hooks, broken rules, or unformatted configs
+    --fix              Repair supported contract, configuration, rule, and hook problems
+    --json             Output machine-readable diagnostics
+
+  scan [options]
+    --context <file>   Prioritize a workspace-relative project context document
+    --json             Preview context, source evidence and module drafts as JSON
+    --apply            Add uncovered drafts to test-truth.md without replacing existing modules
 
   generate [options]
     --target <target>  Target QA platform: "jira", "xray", or "zephyr"
@@ -521,6 +664,16 @@ Commands:
 
   mcp
     Starts the stdio Model Context Protocol (MCP) server
+
+  mcp config [options]
+    --provider <id>    Print configuration for a verified client
+    --format <format> json or toml (default: provider format)
+    --key <key>       JSON server map key (default: mcpServers)
+
+  mcp install [options]
+    --provider <id>    Register a verified client in its project configuration
+    --config <file>   Custom workspace-relative JSON/JSONC configuration
+    --key <key>       Custom server map key (default: mcpServers)
 ```
 
 ---
@@ -561,6 +714,27 @@ jobs:
 ```
 
 *(For `pnpm`, `yarn`, or `bun`, substitute `pnpm exec testweave sync ...`, `yarn run testweave sync ...`, or `bun run testweave sync ...`)*
+
+---
+
+## Troubleshooting
+
+| Symptom | What to do |
+| :--- | :--- |
+| `No upstream branch` | Supply `sync --base <ref>` with an existing revision, or configure the branch's upstream. |
+| Source changes are not reported | Check `policy.sourceGlobs` and `ignoreGlobs` in both baseline and current contracts. A file must be tracked by policy to be checked. |
+| Local sync passes but push fails | The hook checks committed snapshots. Commit the corrected contract together with the source change and check the baseline used for the push. |
+| Contract parsing or validation fails | Keep exactly one top-level `json testweave` fence, valid JSON, unique module/test IDs, and all required fields. Run `doctor` for diagnostics. |
+| Rules, skills, hooks, or MCP entries are missing | Run `doctor --fix`, then `update` if you need to select another integration. |
+| Agent cannot find MCP tools | Check its registration with `mcp config --provider <id>`, confirm the installed CLI still exists, and restart the client. See the [compatibility guide](docs/mcp-providers.md). |
+| Export fails because a file exists | Select a new workspace-relative output path, or omit `--output` to print the artifact. |
+| JSON export reports a missing project key | Add `--project-key PROJ` for Jira, Xray, and Zephyr JSON exports. |
+
+For a diagnostic report:
+
+```sh
+npx --no-install testweave doctor --json
+```
 
 ---
 

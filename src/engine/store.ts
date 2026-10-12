@@ -8,6 +8,7 @@ export interface ContractStore {
   readMarkdown(): Promise<string>;
   initialize(contract: TestTruth): Promise<boolean>;
   upsert(module: TestModule): Promise<TestTruth>;
+  append(modules: TestModule[], expected: TestTruth): Promise<TestTruth>;
 }
 export class MarkdownContractStore implements ContractStore {
   readonly file: string;
@@ -24,6 +25,20 @@ export class MarkdownContractStore implements ContractStore {
   }
   async upsert(input: TestModule): Promise<TestTruth> {
     const module = testModuleSchema.parse(input);
+    return this.update((current) => {
+      const exists = current.modules.some((entry) => entry.id === module.id);
+      return { ...current, modules: exists
+        ? current.modules.map((entry) => entry.id === module.id ? module : entry)
+        : [...current.modules, module] };
+    });
+  }
+  async append(modules: TestModule[], expected: TestTruth): Promise<TestTruth> {
+    return this.update((current) => {
+      if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during scan; retry');
+      return { ...current, modules: [...current.modules, ...modules] };
+    });
+  }
+  private async update(transform: (current: TestTruth) => TestTruth): Promise<TestTruth> {
     const lock = `${this.file}.lock`;
     await this.io.writeFile(lock, String(process.pid), { flag: 'wx' }).catch((error: unknown) => {
       if (error instanceof Error && 'code' in error && error.code === 'EEXIST') throw new Error('Contract is locked by another writer; retry or remove a stale test-truth.md.lock');
@@ -32,10 +47,7 @@ export class MarkdownContractStore implements ContractStore {
     try {
       const markdown = await this.readMarkdown();
       const current = parseTestTruth(markdown);
-      const exists = current.modules.some((entry) => entry.id === module.id);
-      const updated = testTruthSchema.parse({ ...current, modules: exists
-        ? current.modules.map((entry) => entry.id === module.id ? module : entry)
-        : [...current.modules, module] });
+      const updated = testTruthSchema.parse(transform(current));
       if (await this.readMarkdown() !== markdown) throw new Error('Contract changed during update; retry');
       await atomicWrite(this.file, replaceContractBlock(markdown, updated), this.io);
       return updated;

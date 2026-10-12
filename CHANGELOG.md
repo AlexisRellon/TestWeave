@@ -4,6 +4,26 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-12
+
+### Added
+
+- Local `testweave scan` discovery for projects already in development, reading project context before source and inventorying modules, functions, routes, documented journey candidates, and automated tests.
+- Read-only scan previews and JSON reports, custom context selection, and explicit `--apply` adoption of reviewable drafts while preserving existing modules, policy, test IDs, and Markdown.
+- Focused skill guides for scan, init/setup, update, sync, doctor, generate, and MCP, plus separate contract-schema and functional-testing references.
+
+### Changed
+
+- Made `skills/testweave/` the authoritative skill bundle and removed duplicated documentation strings from the installer.
+- Updated setup, refresh, and diagnostics to install and validate every bundled document; doctor repair restores missing or modified resources while preserving user files.
+- Redesigned doctor terminal output with aligned diagnostic rows, relevant paths, installation and workspace details, a check summary, and repair guidance. JSON output and exit codes are unchanged.
+- Expanded onboarding and workflow documentation for existing projects.
+
+### Breaking changes
+
+- `ContractStore` implementations must now provide `append(modules, expected)` for atomic, snapshot-checked scan adoption.
+- `TESTWEAVE_REFERENCE_NAME` now points to `references/functional-testing.md`. The exported content constants remain available and load the authoritative Markdown. Refresh installed skill bundles with `testweave update --yes`; agents should follow the new `SKILL.md` links.
+
 ## [0.5.0] - 2026-10-11
 
 ### Added

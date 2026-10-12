@@ -9,11 +9,12 @@ import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
+import { runScan } from './scan.js';
 import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.5.0')
+  const program = new Command().name('testweave').version('0.6.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -39,6 +40,11 @@ export function createProgram(): Command {
     .option('--json', 'Emit machine-readable report')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
     .action(async (options: SyncOptions) => { process.exitCode = await runSync(await context(), options); });
+  program.command('scan').description('Read project context and discover existing modules, journeys and automated tests')
+    .option('--context <file>', 'Read a workspace-relative project context file first')
+    .option('--apply', 'Add uncovered module drafts to test-truth.md, preserving existing modules')
+    .option('--json', 'Emit context, source evidence and validated module drafts as JSON')
+    .action(async (options: unknown) => { await runScan(await context(), options); });
   program.command('generate').description('Export QA definitions, or author an AI module draft')
     .option('--target <target>', 'jira, xray, or zephyr', 'xray')
     .option('--format <format>', 'csv or json', 'csv')

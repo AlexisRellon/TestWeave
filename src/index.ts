@@ -2,6 +2,7 @@ export * from './schema/test-truth.js';
 export * from './engine/markdown.js';
 export * from './engine/files.js';
 export * from './engine/store.js';
+export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
 export * from './engine/doctor.js';
