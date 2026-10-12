@@ -1,75 +1,33 @@
 ---
 name: testweave
-description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when inspecting, adding, editing, or testing code to check test-truth.md, prevent QA drift, update test cases, and sync contracts.
+description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when adopting an existing project, inspecting or changing code, maintaining test-truth.md, checking QA drift, or exporting functional test definitions.
 ---
 
 # TestWeave QA Contract Skill
 
-TestWeave keeps manual QA test contracts (`test-truth.md`) synchronized with source code modifications. Every change in system behavior must be matched by corresponding, updated test coverage in `test-truth.md`.
+Maintain functional QA scenarios in `test-truth.md` alongside the behavior they describe. Read only the command and reference documents relevant to the task.
 
-## Core Principles
+## Shared workflow
 
-1. **Evidence over assumptions**: Never claim a test was executed without actual evidence. This contract describes tests and acceptance criteria, not execution results.
-2. **Read the contract first**: Inspect `test-truth.md` before altering source behavior.
-3. **Path coverage**: Every modified source file must match at least one registered module's paths pattern.
-4. **Synchronized updates**: When editing code, update that module's manual test actions and expected results in the same commit.
-5. **Scenario diversity**: Include success, failure, and edge/boundary scenarios. Keep test IDs stable and globally unique.
-6. **Zero drift before committing**: Run `testweave sync` before committing. Staged changes must pass without unmapped or stale module drift.
-7. **Preserve policy**: Never bypass Git pre-push hooks or loosen warning policies to conceal QA drift.
+1. Read available project context first: project-context.md, README, AGENTS.md, architecture, requirements and user-journey documentation. Use it to understand existing behavior and acceptance criteria.
+2. Read `test-truth.md` before changing behavior. Every changed source file must match a registered module's paths.
+3. Update the affected module's scenarios alongside its code. Preserve existing module and globally unique test IDs, and include success, failure and boundary cases.
+4. Distinguish test definitions from execution evidence. Never claim tests ran without evidence. Discovery drafts marked `needs-review` require specific inputs and observable expected outcomes.
+5. Run `testweave sync` against an available baseline and resolve drift before committing code and contract together. Preserve enforcement policy and Git hooks.
 
-## When to Use This Skill
+## Choose the command guide
 
-- **Planning code changes**: Review which modules and test cases cover the files you will touch.
-- **Adding new features**: Register new modules with comprehensive test plans and valid file paths.
-- **Refactoring or fixing bugs**: Update existing manual test actions, expected results, or add regression test cases.
-- **Pre-commit verification**: Run `testweave sync` to confirm zero QA drift.
-- **System diagnostics**: Run `testweave doctor` to ensure configuration, agent rules, and hooks are intact.
+| Task | Read |
+| --- | --- |
+| Adopt an existing project; discover modules, functions, journeys and tests | [commands/scan.md](commands/scan.md) |
+| Initialize a workspace and select agent integrations | [commands/init.md](commands/init.md) |
+| Refresh installed skills, rules, MCP registrations and hooks | [commands/update.md](commands/update.md) |
+| Check changes against the QA contract; interpret drift | [commands/sync.md](commands/sync.md) |
+| Diagnose or repair workspace setup | [commands/doctor.md](commands/doctor.md) |
+| Export QA definitions or request an AI module draft | [commands/generate.md](commands/generate.md) |
+| Configure MCP clients or maintain contracts through MCP | [commands/mcp.md](commands/mcp.md) |
 
-## Test Categorization & Types
+## References
 
-Test cases in `test-truth.md` support explicit functional testing types:
-- `unit`: Unit testing for isolated logic, utilities, and components.
-- `integration`: Integration testing for multi-component and service boundaries.
-- `system`: System testing for complete end-to-end flows.
-- `sanity`: Sanity testing for quick verification of targeted bug fixes.
-- `smoke`: Smoke testing for fundamental build and readiness checks.
-- `regression`: Regression testing to verify unchanged features remain functional.
-- `uat`: User Acceptance Testing from the customer/operator perspective.
-- `ui`: UI testing for interactive visual elements, CLI prompts, and layouts.
-- `api`: API testing for MCP tool schemas, endpoints, and data contracts.
-- `interface`: Interface testing between distinct subsystems (IDEs, Git hooks).
-- `component`: Component testing for modular building blocks.
-- `e2e`: End-to-end lifecycle verification.
-
-For complete definitions, test design techniques (Boundary Value Analysis, Equivalence Partitioning), and authoring guidelines, see [reference.md](reference.md).
-
-## Tools & Commands
-
-### MCP Tools (when running in MCP-enabled agent)
-- `get_contract`: Inspect the current QA contract, registered modules, paths, and test cases.
-- `upsert_test_module`: Add or update a module in `test-truth.md` with stable test IDs, test types, actions, and expected results.
-- `check_drift`: Verify whether working tree changes or diffs diverge from the QA contract.
-
-### CLI Commands
-- `testweave sync`: Check source changes against QA contract.
-  - `--strict`: Block on drift even if policy is set to warn.
-  - `--base <ref>`: Compare against a specific Git revision instead of upstream.
-  - `--json`: Output machine-readable drift report.
-- `testweave doctor`: Validate the contract, agent rules, and Git pre-push hook.
-  - `--fix`: Automatically repair missing rules or hooks without losing contracts.
-- `testweave generate`: Export manual tests for Jira, Xray, or Zephyr, or draft modules with AI.
-  - `--target <jira|xray|zephyr>`: Target QA tracking system.
-  - `--format <csv|json>`: Export format.
-  - `--provider <openai|anthropic>`: AI module drafting.
-- `testweave init` / `testweave setup`: Initialize contract, agent skills, and Git pre-push hook.
-  - `-y, --yes`: Accept defaults non-interactively.
-- `testweave update`: Update agent skills, IDE rules, and hooks to the latest definitions.
-  - `-y, --yes`: Accept existing or detected integrations non-interactively.
-
-## Development Workflow
-
-1. **Read Contract**: Open `test-truth.md` or call `get_contract` to inspect existing test coverage for target files.
-2. **Implement Changes**: Modify the source code.
-3. **Update Test Contract**: Update or add test cases with clear actions, types, and expected outcomes matching the new behavior.
-4. **Verify Alignment**: Run `testweave sync` (or call `check_drift`) to ensure zero drift.
-5. **Commit Together**: Commit `test-truth.md` in the exact same commit as the source code changes.
+- Read [references/contract-schema.md](references/contract-schema.md) when authoring or validating modules, paths and test cases.
+- Read [references/functional-testing.md](references/functional-testing.md) when choosing test types or designing functional scenarios.
