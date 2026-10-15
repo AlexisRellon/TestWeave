@@ -9,6 +9,12 @@ export const sourcePatternSchema = z.string().min(1).max(500).refine(
   'Use a positive, workspace-relative POSIX glob without parent traversal',
 );
 export const testStepSchema = z.strictObject({ action: text, data: z.string().max(20_000), expected: text });
+export const specPointerSchema = z.string().min(1).max(500).refine((value) => {
+  const [file, anchor, ...extra] = value.split('#');
+  return !!file && !extra.length && !/[\r\n\0]/.test(value) && (anchor === undefined || anchor.length > 0) &&
+    !/^[\\/]|[:\\\r\n\0*?]/.test(file) && !file.split('/').includes('..') &&
+    !/(?:^|\/)superpowers\/plans\//.test(file);
+}, 'Use a permanent workspace-relative document pointer with an optional heading anchor');
 
 export const TEST_TYPES = [
   'unit',
@@ -101,9 +107,10 @@ const baseTestCaseSchema = z.strictObject({
   title: text,
   type: testTypeSchema.default('regression'),
   priority: z.enum(['low', 'medium', 'high', 'critical']),
-  preconditions: z.array(text).max(100),
+  preconditions: z.array(text).max(100).default([]),
   steps: z.array(testStepSchema).min(1).max(500),
-  tags: z.array(z.string().trim().min(1).max(100)).max(100),
+  tags: z.array(z.string().trim().min(1).max(100)).max(100).default([]),
+  refs: z.array(text).max(100).optional(),
 });
 
 export const testCaseSchema = z.preprocess((input) => {
@@ -122,15 +129,25 @@ export const testModuleSchema = z.strictObject({
   name: text,
   description: text,
   paths: z.array(sourcePatternSchema).min(1).max(100),
+  docs: z.array(specPointerSchema).max(100).optional(),
+  specs: z.array(specPointerSchema).max(100).optional(),
   tests: z.array(testCaseSchema).min(1).max(1000),
+});
+// Strict-output APIs require nullable optional fields. Normalize nulls before storage.
+export const structuredModuleSchema = testModuleSchema.extend({
+  docs: z.array(specPointerSchema).max(100).nullable().optional(),
+  specs: z.array(specPointerSchema).max(100).nullable().optional(),
+  tests: z.array(baseTestCaseSchema.extend({ refs: z.array(text).max(100).nullable().optional() })).min(1).max(1000),
 });
 export const testTruthSchema = z.strictObject({
   schemaVersion: z.literal(1),
   project: text,
+  docs: z.array(specPointerSchema).max(100).optional(),
   policy: z.strictObject({
     mode: z.enum(['block', 'warn']),
     sourceGlobs: z.array(sourcePatternSchema).min(1).max(100),
     ignoreGlobs: z.array(sourcePatternSchema).max(100),
+    docDriftMode: z.enum(['warn', 'block', 'ignore']).optional(),
   }),
   modules: z.array(testModuleSchema).max(10_000),
 }).superRefine((contract, context) => {

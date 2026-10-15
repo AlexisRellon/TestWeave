@@ -1,4 +1,7 @@
 import { simpleGit, type SimpleGit } from 'simple-git';
+import { readFile } from 'node:fs/promises';
+import { isMissing, workspacePath } from './files.js';
+import picomatch from 'picomatch';
 
 export interface GitRepository {
   root(): Promise<string>;
@@ -8,7 +11,11 @@ export interface GitRepository {
   readContract(ref: string): Promise<string | undefined>;
   hookPath(): Promise<string>;
   emptyTree(): Promise<string>;
+  readFile?(file: string, ref?: string): Promise<string | undefined>;
+  diffForPaths?(paths: string[]): Promise<string>;
+  commits?(base: string, target: string): Promise<CommitChange[]>;
 }
+export interface CommitChange { sha: string; message: string; files: string[] }
 export class SimpleGitRepository implements GitRepository {
   constructor(private readonly git: SimpleGit) {}
   async root(): Promise<string> { return (await this.git.revparse(['--show-toplevel'])).trim(); }
@@ -32,6 +39,39 @@ export class SimpleGitRepository implements GitRepository {
     if (!entries) return undefined;
     if (!entries.startsWith('100644 ') && !entries.startsWith('100755 ')) throw new Error('Committed test-truth.md must be a regular file');
     return this.git.show([`${ref}:test-truth.md`]);
+  }
+  async readFile(file: string, ref?: string): Promise<string | undefined> {
+    if (ref) {
+      const entries = await this.git.raw(['ls-tree', '-z', ref, '--', `:(literal)${file}`]);
+      if (!entries) return undefined;
+      if (!/^100(?:644|755) /.test(entries)) throw new Error(`Not a regular file: ${file}`);
+      return this.git.show([`${ref}:${file}`]);
+    }
+    try { return await readFile(await workspacePath(await this.root(), file), 'utf8'); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+  }
+  async diffForPaths(paths: string[]): Promise<string> {
+    if (!paths.length) return '';
+    let base: string;
+    try { base = await this.resolve('HEAD'); } catch { base = await this.emptyTree(); }
+    let diff = await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', base, '--', ...paths]);
+    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+    const matches = picomatch(paths, { dot: true });
+    for (const file of untracked.filter((entry) => matches(entry))) {
+      const content = await this.readFile(file);
+      if (content === undefined || content.includes('\0')) continue;
+      const lines = content.split('\n');
+      if (lines.at(-1) === '') lines.pop();
+      diff += `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => '+' + line).join('\n')}\n`;
+    }
+    return diff;
+  }
+  async commits(base: string, target: string): Promise<CommitChange[]> {
+    const shas = (await this.git.raw(['rev-list', `${base}..${target}`])).trim().split(/\s+/).filter(Boolean);
+    return Promise.all(shas.map(async (sha) => ({ sha,
+      message: await this.git.raw(['show', '-s', '--format=%B', sha]),
+      files: (await this.git.raw(['diff-tree', '--root', '-m', '--no-commit-id', '--name-only', '-r', '-z', sha, '--'])).split('\0').filter(Boolean),
+    })));
   }
   async hookPath(): Promise<string> { return (await this.git.revparse(['--git-path', 'hooks'])).trim(); }
   async emptyTree(): Promise<string> { return (await this.git.raw(['hash-object', '-w', '-t', 'tree', '--stdin'])).trim(); }

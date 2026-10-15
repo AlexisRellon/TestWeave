@@ -1,6 +1,6 @@
 {
   "name": "testweave",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -64,15 +64,15 @@
     "simple-git": "4.0.2",
     "toml-eslint-parser": "0.10.0",
     "unified": "11.0.5",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "typescript": "~5.9.3"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
     "@types/picomatch": "^4.0.2",
     "@types/prompts": "^2.4.9",
     "semver": "7.8.5",
-    "tsx": "^4.21.0",
-    "typescript": "~5.9.3"
+    "tsx": "^4.21.0"
   },
   "overrides": {
     "es-define-property": "npm:@socketregistry/es-define-property@^1",

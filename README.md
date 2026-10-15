@@ -568,6 +568,31 @@ Configured automatically during `init`. Uses a direct `node` invocation with nat
 | `analyze_code_drift` | Tool | Compares working files against upstream or `--base`. Returns a full JSON drift report. |
 | `upsert_test_module` | Tool | Safely creates or updates a module in `test-truth.md`. Uses atomic file locking (`test-truth.md.lock`) and validates the full schema before writing. |
 | `generate_qa_export` | Tool | Returns test definitions formatted for Jira, Xray, or Zephyr without modifying disk. |
+| `get_contract_index` | Tool | Module IDs, paths, spec pointers and test IDs/titles only. |
+| `get_modules_for_files` / `get_module_by_path` | Tools | Only modules matching edited file paths. |
+| `get_spec_slice` | Tool | Linked Markdown sections, scoped uncommitted diff hunks and test headers. |
+| `upsert_test_case` / `remove_test_case` | Tools | Locked case edits preserving unrelated tests and Markdown; the final case cannot be removed. |
+| `impact` | Tool | Planned paths/globs mapped to modules, specs, tests and preconditions. |
+
+Prefer scoped reads and case-level edits over transferring the full contract. `testweave mcp --compact` omits default empty preconditions/tags and regression types; validation restores defaults.
+
+### v0.7.0 drift and impact workflow
+
+```sh
+testweave impact 'src/auth/**' --json
+testweave sync --base main --semantic
+testweave sync --base main --interactive
+```
+
+Schema version 1 now accepts optional top-level `docs`, module `docs`/`specs`, test `refs`, and `policy.docDriftMode` (`warn` by default). Document pointers such as `docs/auth.md#login` reference permanent specifications without copying their prose. Doctor flags dead path globs, orphaned modules, missing specs and missing anchors; these require manual review, not automatic deletion.
+
+Semantic filtering uses local JavaScript/TypeScript syntax analysis to ignore comments, formatting, local variable renames and internal type-only edits. Public signatures, routes, component props and runtime logic retain drift. Unsupported languages, syntax errors and uncertain cases retain drift. It does not prove runtime equivalence.
+
+Spec drift compares linked heading sections independently of code drift. `docDriftMode: block` enforces it; `ignore` disables it once established in the baseline. Baseline enforcement cannot be weakened by a changed contract. `--strict` blocks reported spec drift.
+
+Interactive sync requires a TTY, previews mapping or local scan drafts, and supports explicit AI provider/model options. It checks for concurrent contract edits and reruns drift after applying. Drafts remain `needs-review`; a passing sync is not proof of scenario quality or execution.
+
+For justified refactors, every affected commit can include `Testweave-Bypass: authentication (pure internal refactor)` or `@testweave-skip authentication (reason)`. Pre-push reports audit each commit/reason and clear only the named stale-code issue. They never clear spec, unmapped or removed-module issues or mutate the contract. Ordinary sync ignores these markers. See [the sync guide](skills/testweave/commands/sync.md).
 
 ---
 
@@ -601,7 +626,7 @@ npx testweave generate --target jira --format csv --output jira-issues.csv
 
 ## AI Test Drafting (Optional)
 
-Draft new QA modules or test cases directly from technical specs using OpenAI or Anthropic:
+Draft QA modules from scoped specs and diffs using OpenAI, Anthropic, Ollama, custom OpenAI-compatible endpoints or Gemini:
 
 ```sh
 # Using OpenAI (requires OPENAI_API_KEY)
@@ -614,7 +639,8 @@ npx testweave generate --provider anthropic --model claude-3-5-sonnet-20241022 -
 - **OpenAI**: Enforces the contract schema via Structured Outputs.
 - **Anthropic**: Enforces the contract schema via tool schema constraints.
 - Generated modules are validated with Zod before output. Drafting never silently alters `test-truth.md`—you review and apply drafts explicitly.
-- Only the supplied context file and, when requested, the selected existing module are sent to the provider. API credentials are read from the corresponding environment variable.
+- Supply `--context docs/spec.md#heading` or `--module <id>`. Module context includes linked sections and uncommitted diff hunks. `--compact` reduces prompt and draft JSON size.
+- Ollama defaults to `http://localhost:11434/v1` without credentials. Custom endpoints require `--base-url` and optionally `TESTWEAVE_API_KEY`. Gemini uses `GEMINI_API_KEY`. These providers use [Chat Completions compatibility](https://ai.google.dev/gemini-api/docs/openai) with [JSON schema output](https://ollama.com/blog/structured-outputs); choose a model supporting it. See [provider examples](skills/testweave/commands/generate.md).
 
 ---
 
@@ -642,6 +668,15 @@ Commands:
     --strict           Force blocking mode (exit code 1) even if policy is set to "warn"
     --json             Output drift report as machine-readable JSON
     --pre-push         Read Git ref updates from stdin (used by the installed hook)
+    --semantic         Filter cosmetic JavaScript/TypeScript changes
+    --interactive      Review and resolve drift in a TTY
+    --provider <prov>   Explicit AI provider for interactive drafting
+    --model <model>     Explicit AI model for interactive drafting
+    --base-url <url>    Custom/Ollama endpoint
+
+  impact <paths...> [options]
+    --json             Emit mapped modules, spec slices and test preconditions
+    --compact          Emit compact JSON
 
   doctor [options]
     --fix              Repair supported contract, configuration, rule, and hook problems
@@ -657,12 +692,14 @@ Commands:
     --format <format>  Output format: "csv" or "json"
     --output <file>    Destination file (must be a new file inside the workspace)
     --project-key <k>  Destination project key (required for JSON exports)
-    --provider <prov>  AI drafting provider: "openai" or "anthropic"
+    --provider <prov>  openai, anthropic, ollama, custom or gemini
+    --base-url <url>   Custom/Ollama OpenAI-compatible endpoint
+    --compact         Compact AI prompts and JSON drafts
     --model <model>    AI model identifier
     --context <file>   Context Markdown file for AI drafting
     --module <id>      Target module ID for AI refinement
 
-  mcp
+  mcp [--compact]
     Starts the stdio Model Context Protocol (MCP) server
 
   mcp config [options]

@@ -3,9 +3,12 @@ import type { TestModule, TestTruth } from '../schema/test-truth.js';
 import type { ContractStore } from './store.js';
 import type { GitRepository } from './git.js';
 import { parseTestTruth } from './markdown.js';
+import { isCosmeticChange } from './semantic.js';
+import { auditedBypasses, type BypassAudit } from './bypass.js';
+import { sliceMarkdown, specFile, specPointers } from './specs.js';
 
 export interface DriftIssue {
-  kind: 'unmapped' | 'stale-module' | 'removed-module';
+  kind: 'unmapped' | 'stale-module' | 'removed-module' | 'stale-spec';
   files: string[];
   moduleId?: string;
   message: string;
@@ -17,8 +20,9 @@ export interface DriftReport {
   issues: DriftIssue[];
   mode: 'block' | 'warn';
   blocked: boolean;
+  bypasses?: BypassAudit[];
 }
-export interface AnalyzeOptions { base?: string; target?: string; strict?: boolean; emptyBase?: boolean }
+export interface AnalyzeOptions { base?: string; target?: string; strict?: boolean; emptyBase?: boolean; semantic?: boolean; prePush?: boolean }
 export interface DriftAnalyzer { analyze(options?: AnalyzeOptions): Promise<DriftReport> }
 
 function matches(file: string, patterns: string[]): boolean {
@@ -61,9 +65,48 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
     if (!newMarkdown) throw new Error('test-truth.md is missing from the checked revision; run testweave init and commit the contract');
     const current = parseTestTruth(newMarkdown);
     const previous = oldMarkdown === undefined ? undefined : parseTestTruth(oldMarkdown);
-    const issues = detectDrift(files, previous, current);
+    let behavioral = files;
+    if (options.semantic && this.git.readFile) {
+      const cosmetic = new Set<string>();
+      for (const file of files) {
+        if (!/\.[cm]?[jt]sx?$/.test(file) || !(sourceFile(file, current) || (previous && sourceFile(file, previous)))) continue;
+        try {
+          if (isCosmeticChange(file, await this.git.readFile(file, base), await this.git.readFile(file, target))) cosmetic.add(file);
+        } catch { /* Unreadable files retain drift instead of being considered cosmetic. */ }
+      }
+      behavioral = files.filter((file) => !cosmetic.has(file));
+    }
+    let issues = detectDrift(behavioral, previous, current);
+    const docModes = [previous?.policy.docDriftMode ?? 'warn', current.policy.docDriftMode ?? 'warn'];
+    const docMode = docModes.includes('block') ? 'block' : docModes.includes('warn') ? 'warn' : 'ignore';
+    if (previous && docMode !== 'ignore') {
+      for (const module of current.modules) {
+        const before = previous.modules.find((entry) => entry.id === module.id);
+        if (!before || testContent(before) !== testContent(module)) continue;
+        const pointers = [...new Set([...specPointers(previous, before), ...specPointers(current, module)])];
+        const stale: string[] = [];
+        for (const pointer of pointers) {
+          const file = specFile(pointer);
+          if (!files.includes(file)) continue;
+          if (this.git.readFile) {
+            try {
+              const old = await this.git.readFile(file, base);
+              const next = await this.git.readFile(file, target);
+              if (old !== undefined && next !== undefined && sliceMarkdown(old, pointer) === sliceMarkdown(next, pointer)) continue;
+            } catch { /* Deleted or invalid sections retain drift. */ }
+          }
+          stale.push(pointer);
+        }
+        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: module.id, files: stale, message: 'Linked spec sections changed without a QA update' });
+      }
+    }
+    let bypasses: BypassAudit[] = [];
+    if (options.prePush && target && this.git.commits && !options.emptyBase) {
+      ({ issues, bypasses } = auditedBypasses(issues, await this.git.commits(base, target)));
+    }
     // A branch cannot silently weaken the policy that its upstream enforces.
     const mode = options.strict || previous?.policy.mode === 'block' ? 'block' : current.policy.mode;
-    return { base, target: target ?? 'working-tree', changedFiles: files, issues, mode, blocked: mode === 'block' && issues.length > 0 };
+    const blocked = issues.some((issue) => issue.kind === 'stale-spec' ? options.strict || docMode === 'block' : mode === 'block');
+    return { base, target: target ?? 'working-tree', changedFiles: files, issues, mode, blocked, ...(bypasses.length ? { bypasses } : {}) };
   }
 }

@@ -4,6 +4,32 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-15
+
+### Added
+
+- Scoped MCP contract indexes, file-matched modules, anchored spec slices, impact previews and locked case-level mutations.
+- Compact MCP/AI JSON and progressive skill guides with compact entrypoints.
+- Optional JS/TS semantic drift filtering, separate spec drift policy and per-commit justified pre-push bypass audits.
+- Doctor diagnostics for dead source globs, orphaned modules and missing spec files/headings.
+- Local CLI/MCP impact previews and a TTY drift resolver with reviewed mapping, local drafts and explicit AI drafting.
+- Ollama, custom OpenAI-compatible and Gemini authoring with scoped context and schema validation.
+
+### Changed
+
+- Schema version 1 accepts optional docs/specs/refs pointers and docDriftMode; compact case defaults restore on validation. Schema version 2 remains a later milestone.
+- TypeScript is a runtime dependency for local semantic analysis.
+
+### Breaking changes
+
+- ContractStore implementations must provide upsertCase and removeCase; upsert accepts an optional expected snapshot for interactive review.
+
+### Known limitations
+
+- Follow-up audit fixes are deferred from this release. Semantic filtering can miss declaration-kind and separately exported signature changes; use ordinary sync for conservative checks.
+- Anchored spec diffs can include neighboring sections; review all provider-bound context before using hosted drafting. Brace globs and committed-change resolution can omit relevant drafting diffs.
+- Spec-only module removal, future-glob impact matching, dead-path diagnostics and unnecessary bypass history lookups have known audit findings scheduled for follow-up.
+
 ## [0.6.0] - 2026-10-12
 
 ### Added
