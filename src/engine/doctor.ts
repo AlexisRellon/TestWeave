@@ -6,6 +6,11 @@ import { createTestTruth } from '../schema/test-truth.js';
 import { readConfig, saveConfig, type ProjectConfig } from '../integrations/config.js';
 import { checkHook, installHook } from '../integrations/hooks.js';
 import { hasIdeRules, installIdeRules } from '../integrations/ide.js';
+import picomatch from 'picomatch';
+import { listFiles } from './scan.js';
+import { readSpecSlice, specPointers } from './specs.js';
+import { stat } from 'node:fs/promises';
+import { workspacePath } from './files.js';
 
 export interface Diagnostic { id: string; ok: boolean; repairable: boolean; message: string }
 export interface DoctorDependencies { root: string; git: GitRepository; store: ContractStore; cliPath?: string }
@@ -15,6 +20,29 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   try {
     const contract = await deps.store.read();
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
+    const listed = await listFiles(deps.root);
+    const files: string[] = [];
+    for (const file of listed) {
+      try { if ((await stat(await workspacePath(deps.root, file))).isFile()) files.push(file); }
+      catch { /* Deleted or escaping candidates are not live workspace paths. */ }
+    }
+    for (const module of contract.modules) {
+      let live = false;
+      for (const pattern of module.paths) {
+        const matches = picomatch(pattern, { dot: true });
+        const ok = files.some((file) => matches(file));
+        live ||= ok;
+        diagnostics.push({ id: `dead-path:${module.id}:${pattern}`, ok, repairable: false, message: `${module.id}: ${pattern} ${ok ? 'matches workspace files' : 'matches no existing files'}` });
+      }
+      if (!live) diagnostics.push({ id: `orphaned-module:${module.id}`, ok: false, repairable: false, message: `${module.id} has no live source paths` });
+    }
+    const pointers = new Set([...specPointers(contract), ...contract.modules.flatMap((module) => specPointers(contract, module))]);
+    for (const pointer of pointers) {
+      try {
+        await readSpecSlice(deps.root, pointer);
+        diagnostics.push({ id: `dead-spec:${pointer}`, ok: true, repairable: false, message: `Spec exists: ${pointer}` });
+      } catch (error) { diagnostics.push({ id: `dead-spec:${pointer}`, ok: false, repairable: false, message: errorMessage(error) }); }
+    }
   } catch (error) {
     diagnostics.push({ id: 'contract', ok: false, repairable: isMissing(error), message: errorMessage(error) });
   }

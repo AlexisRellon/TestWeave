@@ -25,7 +25,7 @@ function excludedPath(file: string): boolean {
   return file.split('/').some((part) => excluded.has(part)) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|\.d\.ts$/.test(file);
 }
 
-async function listFiles(root: string): Promise<string[]> {
+export async function listFiles(root: string): Promise<string[]> {
   const git = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
   if (await git.checkIsRepo()) {
     const listed = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
@@ -88,7 +88,7 @@ function inspect(file: string, content: string): ScanEvidence {
 }
 
 // Character classes keep literal filenames compatible with the POSIX glob schema.
-function literalGlob(file: string): string {
+export function literalGlob(file: string): string {
   return file.replace(/[\[\]*?{}()!+@]/g, (character) => character === ']' ? '[]]' : '[' + character + ']');
 }
 function uniqueId(base: string, used: Set<string>): string {

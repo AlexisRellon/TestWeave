@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { testModuleSchema, testTruthSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
+import { testCaseSchema, testModuleSchema, testTruthSchema, type TestCase, type TestModule, type TestTruth } from '../schema/test-truth.js';
 import { atomicWrite, nodeFileSystem, readOptional, rejectSymlink, type FileSystem } from './files.js';
 import { parseTestTruth, replaceContractBlock, serializeTestTruth } from './markdown.js';
 
@@ -7,8 +7,10 @@ export interface ContractStore {
   read(): Promise<TestTruth>;
   readMarkdown(): Promise<string>;
   initialize(contract: TestTruth): Promise<boolean>;
-  upsert(module: TestModule): Promise<TestTruth>;
+  upsert(module: TestModule, expected?: TestTruth): Promise<TestTruth>;
   append(modules: TestModule[], expected: TestTruth): Promise<TestTruth>;
+  upsertCase(moduleId: string, testCase: TestCase): Promise<TestTruth>;
+  removeCase(moduleId: string, testId: string): Promise<TestTruth>;
 }
 export class MarkdownContractStore implements ContractStore {
   readonly file: string;
@@ -23,9 +25,10 @@ export class MarkdownContractStore implements ContractStore {
     await this.io.writeFile(this.file, serializeTestTruth(contract), { encoding: 'utf8', flag: 'wx' });
     return true;
   }
-  async upsert(input: TestModule): Promise<TestTruth> {
+  async upsert(input: TestModule, expected?: TestTruth): Promise<TestTruth> {
     const module = testModuleSchema.parse(input);
     return this.update((current) => {
+      if (expected && JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during review; retry');
       const exists = current.modules.some((entry) => entry.id === module.id);
       return { ...current, modules: exists
         ? current.modules.map((entry) => entry.id === module.id ? module : entry)
@@ -36,6 +39,21 @@ export class MarkdownContractStore implements ContractStore {
     return this.update((current) => {
       if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during scan; retry');
       return { ...current, modules: [...current.modules, ...modules] };
+    });
+  }
+  async upsertCase(moduleId: string, input: TestCase): Promise<TestTruth> {
+    const testCase = testCaseSchema.parse(input);
+    return this.updateCases(moduleId, (tests) => tests.some((test) => test.id === testCase.id)
+      ? tests.map((test) => test.id === testCase.id ? testCase : test) : [...tests, testCase]);
+  }
+  async removeCase(moduleId: string, testId: string): Promise<TestTruth> {
+    return this.updateCases(moduleId, (tests) => tests.filter((test) => test.id !== testId));
+  }
+  private async updateCases(moduleId: string, transform: (tests: TestCase[]) => TestCase[]): Promise<TestTruth> {
+    return this.update((current) => {
+      if (!current.modules.some((module) => module.id === moduleId)) throw new Error(`Unknown module: ${moduleId}`);
+      return { ...current, modules: current.modules.map((module) => module.id === moduleId
+        ? { ...module, tests: transform(module.tests) } : module) };
     });
   }
   private async update(transform: (current: TestTruth) => TestTruth): Promise<TestTruth> {

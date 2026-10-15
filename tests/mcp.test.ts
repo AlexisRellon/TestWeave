@@ -8,7 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { createMcpServer } from '../src/mcp/server.js';
 import { repositoryFixture, moduleFixture } from './helpers.js';
 
-test('MCP exposes the contract and validates all three tools', async (t) => {
+test('MCP exposes the contract and validates scoped and mutation tools', async (t) => {
   const { context, base, root } = await repositoryFixture(t);
   const server = createMcpServer(context);
   const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -17,7 +17,7 @@ test('MCP exposes the contract and validates all three tools', async (t) => {
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['analyze_code_drift', 'generate_qa_export', 'upsert_test_module']);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['analyze_code_drift', 'generate_qa_export', 'get_contract_index', 'get_module_by_path', 'get_modules_for_files', 'get_spec_slice', 'impact', 'remove_test_case', 'upsert_test_case', 'upsert_test_module']);
   const { resources } = await client.listResources();
   assert.equal(resources[0]?.uri, pathToFileURL(path.join(root, 'test-truth.md')).href);
   const resource = await client.readResource({ uri: resources[0]!.uri });
@@ -40,5 +40,5 @@ test('compiled MCP process uses clean stdio and completes a protocol handshake',
   t.after(async () => { await client.close(); });
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 3);
+  assert.equal(result.tools.length, 10);
 });

@@ -51,7 +51,7 @@ test('compiled CLI exports generic JSON and Codex TOML and injects custom config
   const client = new Client({ name: 'custom-client-test', version: '1.0.0' });
   try {
     await client.connect(new StdioClientTransport({ ...server, stderr: 'pipe' }));
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
     const result = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'xray', format: 'csv' } });
     assert.notEqual(result.isError, true);
     assert.equal((await client.listResources()).resources.length, 1);
@@ -114,7 +114,7 @@ test('setup configures MCP, update refreshes launch paths, and doctor repairs mi
   const client = new Client({ name: 'automatic-mcp-test', version: '1.0.0' });
   try {
     await client.connect(new StdioClientTransport({ command: server.command, args: server.args, stderr: 'pipe' }));
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
     assert.equal((await client.listResources()).resources.length, 1);
   } finally { await client.close(); }
 });

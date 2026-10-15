@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -69,15 +69,15 @@ Generated from the working files with `npm run bundle:source`.
     "simple-git": "4.0.2",
     "toml-eslint-parser": "0.10.0",
     "unified": "11.0.5",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "typescript": "~5.9.3"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
     "@types/picomatch": "^4.0.2",
     "@types/prompts": "^2.4.9",
     "semver": "7.8.5",
-    "tsx": "^4.21.0",
-    "typescript": "~5.9.3"
+    "tsx": "^4.21.0"
   },
   "overrides": {
     "es-define-property": "npm:@socketregistry/es-define-property@^1",
@@ -153,6 +153,12 @@ release-assets/
 .mcp.json
 .codex/config.toml
 .lean-ctx/
+opencode.json
+opencode.jsonc
+
+.agents/skills/adaptive-bugfix
+.codex/hooks.json
+docs/bug-memory
 ````
 
 ````src/cli/agent-selector.ts
@@ -572,32 +578,37 @@ function printSummary(checks: Diagnostic[], log: (message: string) => void): voi
 
 ````src/cli/generate.ts
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { CliContext } from './context.js';
 import { workspacePath } from '../engine/files.js';
 import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
 import { createModuleAuthor, providerSchema } from '../llm/factory.js';
+import { readSpecSlice } from '../engine/specs.js';
+import { specContext } from '../engine/queries.js';
+import { wireJson } from '../engine/wire.js';
 
 export const generateOptionsSchema = exportOptionsSchema.extend({
   output: z.string().min(1).optional(), provider: providerSchema.optional(),
   model: z.string().min(1).optional(), context: z.string().min(1).optional(), module: z.string().min(1).optional(),
+  baseUrl: z.string().min(1).optional(), compact: z.boolean().optional(),
 });
 export type GenerateOptions = z.infer<typeof generateOptionsSchema>;
 export async function runGenerate(context: CliContext, input: unknown): Promise<void> {
   const options = generateOptionsSchema.parse(input);
   if (options.provider) {
-    if (!options.model || !options.context) throw new Error('AI authoring requires --model and --context; only that context and the selected module are sent');
-    const source = await readFile(await workspacePath(context.root, options.context), 'utf8');
+    if (!options.model || (!options.context && !options.module)) throw new Error('AI authoring requires --model and --context or --module; only scoped context is sent');
     const contract = await context.store.read();
     const existing = options.module ? contract.modules.find((module) => module.id === options.module) : undefined;
     if (options.module && !existing) throw new Error(`Unknown module: ${options.module}`);
-    const author = await createModuleAuthor(options.provider, options.model);
-    const draft = await author.author({ context: source, ...(existing ? { existing } : {}) });
-    await emit(context, JSON.stringify(draft, null, 2) + '\n', options.output);
+    const scoped = existing ? await specContext(context.root, contract, existing.id) : undefined;
+    const source = wireJson({ ...(options.context ? { context: await readSpecSlice(context.root, options.context) } : {}), ...(scoped ?? {}) }, options.compact);
+    const author = await createModuleAuthor(options.provider, options.model, process.env, options.baseUrl);
+    const draft = await author.author({ context: source, ...(existing ? { existing } : {}), ...(options.compact ? { compact: true } : {}) });
+    await emit(context, wireJson(draft, options.compact) + '\n', options.output);
     return;
   }
-  if (options.model || options.context || options.module) throw new Error('--model, --context, and --module require --provider');
+  if (options.model || options.context || options.module || options.baseUrl) throw new Error('--model, --context, --module and --base-url require --provider');
   const artifact = generateExport(await context.store.read(), {
     target: options.target, format: options.format, ...(options.projectKey ? { projectKey: options.projectKey } : {}),
   });
@@ -627,9 +638,11 @@ import { runGenerate } from './generate.js';
 import { runScan } from './scan.js';
 import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
+import { impact } from '../engine/queries.js';
+import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.6.0')
+  const program = new Command().name('testweave').version('0.7.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -654,26 +667,48 @@ export function createProgram(): Command {
     .option('--strict', 'Block on drift even in warning mode')
     .option('--json', 'Emit machine-readable report')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
+    .option('--semantic', 'Ignore provably cosmetic JavaScript/TypeScript edits')
+    .option('--interactive', 'Resolve drift in a TTY with reviewed local or AI drafts')
+    .option('--provider <provider>', 'Explicit AI provider for interactive drafting')
+    .option('--model <model>', 'AI model for interactive drafting')
+    .option('--base-url <url>', 'Custom or Ollama API endpoint')
     .action(async (options: SyncOptions) => { process.exitCode = await runSync(await context(), options); });
   program.command('scan').description('Read project context and discover existing modules, journeys and automated tests')
     .option('--context <file>', 'Read a workspace-relative project context file first')
     .option('--apply', 'Add uncovered module drafts to test-truth.md, preserving existing modules')
     .option('--json', 'Emit context, source evidence and validated module drafts as JSON')
     .action(async (options: unknown) => { await runScan(await context(), options); });
+  program.command('impact').description('Preview QA coverage for planned file paths or globs')
+    .argument('<paths...>', 'Workspace-relative paths or globs')
+    .option('--json', 'Emit JSON')
+    .option('--compact', 'Emit compact JSON')
+    .action(async (paths: string[], options: { json?: boolean; compact?: boolean }) => {
+      const ctx = await context();
+      const report = await impact(ctx.root, await ctx.store.read(), paths);
+      if (options.json || options.compact) ctx.output.log(wireJson(report, options.compact));
+      else for (const module of report.modules) {
+        ctx.output.log(`${module.id}: ${module.tests.map((test) => test.id).join(', ')}`);
+        for (const spec of module.specs) ctx.output.log(`${spec.pointer}\n${'content' in spec ? spec.content : spec.error}`);
+        for (const test of module.tests) ctx.output.log(`${test.id}: ${test.title}\n${test.preconditions.join('\n')}`);
+      }
+    });
   program.command('generate').description('Export QA definitions, or author an AI module draft')
     .option('--target <target>', 'jira, xray, or zephyr', 'xray')
     .option('--format <format>', 'csv or json', 'csv')
     .option('--project-key <key>', 'Destination Jira project key (required for JSON)')
     .option('-o, --output <file>', 'Write a new workspace-relative file; default stdout')
-    .option('--provider <provider>', 'Opt into AI drafting: openai or anthropic')
+    .option('--provider <provider>', 'Opt into AI drafting: openai, anthropic, ollama, custom or gemini')
+    .option('--base-url <url>', 'Custom or Ollama OpenAI-compatible API endpoint')
+    .option('--compact', 'Compact AI prompt and JSON draft')
     .option('--model <model>', 'Explicit provider model ID for AI authoring')
     .option('--context <file>', 'Workspace-relative context file to send to the provider')
     .option('--module <id>', 'Existing module to update in the AI draft')
     .action(async (options: unknown) => { await runGenerate(await context(), options); });
   const mcp = program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
-    .action(async () => {
+    .option('--compact', 'Compact MCP JSON responses')
+    .action(async (options: { compact?: boolean }) => {
       const { serveMcp } = await import('../mcp/server.js');
-      await serveMcp(await context());
+      await serveMcp({ ...await context(), ...(options.compact ? { compact: true } : {}) });
     });
   mcp.command('config').description('Print an MCP entry for any client, including Codex')
     .option('--provider <provider>', 'Verified client ID, such as codex, opencode or gemini-cli')
@@ -846,6 +881,81 @@ export class TerminalPrompter implements UserPrompter {
 }
 ````
 
+````src/cli/resolve.ts
+import prompts from 'prompts';
+import type { CliContext } from './context.js';
+import type { DriftReport } from '../engine/drift.js';
+import { literalGlob, scanProject } from '../engine/scan.js';
+import { specContext } from '../engine/queries.js';
+import { createModuleAuthor, providerSchema } from '../llm/factory.js';
+import { wireJson } from '../engine/wire.js';
+import type { TestModule } from '../schema/test-truth.js';
+
+export interface ResolverOptions { provider?: string; model?: string; baseUrl?: string }
+export interface ResolverUI {
+  choose(message: string, choices: { title: string; value: string }[]): Promise<string | undefined>;
+  confirm(message: string): Promise<boolean>;
+}
+export const terminalResolver: ResolverUI = {
+  async choose(message, choices) {
+    const answer = await prompts({ type: 'select', name: 'value', message, choices });
+    return typeof answer.value === 'string' ? answer.value : undefined;
+  },
+  async confirm(message) {
+    const answer = await prompts({ type: 'confirm', name: 'value', message, initial: false });
+    return answer.value === true;
+  },
+};
+export async function resolveDrift(context: CliContext, report: DriftReport, options: ResolverOptions, ui: ResolverUI = terminalResolver): Promise<void> {
+  for (const issue of report.issues) {
+    if (issue.kind === 'removed-module') continue;
+    const choice = await ui.choose(`${issue.moduleId ?? 'unmapped'}: ${issue.message}`, [
+      { title: 'Leave unresolved', value: 'skip' },
+      ...(issue.kind === 'unmapped' ? [{ title: 'Map files to an existing module', value: 'map' }] : []),
+      { title: 'Scaffold local needs-review scenarios', value: 'scan' },
+      { title: 'Draft from diff with the explicitly selected AI provider', value: 'ai' },
+    ]);
+    if (!choice) return;
+    if (choice === 'skip') continue;
+    const contract = await context.store.read();
+    const existing = contract.modules.find((module) => module.id === issue.moduleId);
+    let drafts: TestModule[] = [];
+    if (choice === 'map') {
+      const id = await ui.choose('Choose module', contract.modules.map((module) => ({ title: module.name, value: module.id })));
+      const module = contract.modules.find((entry) => entry.id === id);
+      if (!module) continue;
+      drafts = [{ ...module, paths: [...new Set([...module.paths, ...issue.files.map(literalGlob)])] }];
+    } else if (choice === 'scan') {
+      if (existing) {
+        const scan = await scanProject(context.root, {
+          ...contract, policy: { ...contract.policy, sourceGlobs: existing.paths },
+          modules: contract.modules.map((module) => module.id === existing.id ? { ...module, paths: ['__testweave_review_placeholder__'] } : module),
+        });
+        const tests = scan.modules.flatMap((module) => module.tests);
+        if (tests.length) drafts = [{ ...existing, tests: [...existing.tests, ...tests] }];
+        else context.output.log('No live uncovered source evidence to scaffold; edit the existing scenarios or select AI drafting.');
+      } else {
+        const scan = await scanProject(context.root, { ...contract, policy: { ...contract.policy, sourceGlobs: issue.files.map(literalGlob) } });
+        drafts = scan.modules;
+      }
+    } else if (choice === 'ai') {
+      if (!options.provider || !options.model) throw new Error('Interactive AI drafting requires explicit --provider and --model');
+      const source = existing ? await specContext(context.root, contract, existing.id)
+        : { diff: await context.git.diffForPaths?.(issue.files), files: issue.files };
+      context.output.log(`Sending scoped diff/spec context to ${options.provider}: ${wireJson(source, true)}`);
+      if (!await ui.confirm('Send this context to the selected provider?')) continue;
+      const author = await createModuleAuthor(providerSchema.parse(options.provider), options.model, process.env, options.baseUrl);
+      drafts = [await author.author({ context: wireJson(source, true), ...(existing ? { existing } : {}), compact: true })];
+    }
+    if (!drafts.length) continue;
+    context.output.log(wireJson(drafts));
+    if (!await ui.confirm('Apply these definitions? needs-review drafts still require authored acceptance criteria.')) continue;
+    if (drafts.length === 1 && contract.modules.some((module) => module.id === drafts[0]!.id)) await context.store.upsert(drafts[0]!, contract);
+    else await context.store.append(drafts, contract);
+  }
+}
+````
+
 ````src/cli/scan.ts
 import path from 'node:path';
 import { z } from 'zod';
@@ -895,8 +1005,9 @@ import pc from 'picocolors';
 import type { CliContext } from './context.js';
 import type { DriftReport, AnalyzeOptions } from '../engine/drift.js';
 import { isZeroSha, parsePushUpdates } from '../engine/git.js';
+import { resolveDrift, type ResolverOptions } from './resolve.js';
 
-export interface SyncOptions { base?: string; strict?: boolean; json?: boolean; prePush?: boolean }
+export interface SyncOptions extends ResolverOptions { base?: string; strict?: boolean; json?: boolean; prePush?: boolean; semantic?: boolean; interactive?: boolean }
 export async function readStdin(stream: NodeJS.ReadableStream = process.stdin): Promise<string> {
   let input = '';
   for await (const chunk of stream) {
@@ -906,8 +1017,10 @@ export async function readStdin(stream: NodeJS.ReadableStream = process.stdin): 
   return input;
 }
 export async function runSync(context: CliContext, options: SyncOptions, input?: string): Promise<number> {
+  if (options.interactive && (options.prePush || options.json || !process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('--interactive requires a TTY and cannot be combined with --pre-push or --json');
+  if (!options.interactive && (options.provider || options.model || options.baseUrl)) throw new Error('Drafting options require --interactive');
   const reports: DriftReport[] = [];
-  const analyzeOptions: AnalyzeOptions = { ...(options.base ? { base: options.base } : {}), ...(options.strict ? { strict: true } : {}) };
+  const analyzeOptions: AnalyzeOptions = { ...(options.base ? { base: options.base } : {}), ...(options.strict ? { strict: true } : {}), ...(options.semantic ? { semantic: true } : {}), ...(options.prePush ? { prePush: true } : {}) };
   if (options.prePush) {
     const updates = parsePushUpdates(input ?? await readStdin());
     for (const update of updates) {
@@ -921,10 +1034,15 @@ export async function runSync(context: CliContext, options: SyncOptions, input?:
       }
     }
   } else reports.push(await context.analyzer.analyze(analyzeOptions));
+  if (options.interactive && reports[0]?.issues.length) {
+    await resolveDrift(context, reports[0], options);
+    reports[0] = await context.analyzer.analyze(analyzeOptions);
+  }
   if (options.json) context.output.log(JSON.stringify(options.prePush ? reports : reports[0], null, 2));
   else for (const report of reports) {
     context.output.log(`Compared ${report.target} against ${report.base}: ${report.changedFiles.length} changed files`);
     if (!report.issues.length) context.output.log(pc.green('No QA drift detected.'));
+    for (const bypass of report.bypasses ?? []) context.output.log(`BYPASS ${bypass.moduleId} ${bypass.commit}: ${bypass.reason}`);
     for (const issue of report.issues) {
       const label = report.blocked ? pc.red('BLOCK') : pc.yellow('WARN');
       context.output.log(`${label} ${issue.moduleId ?? 'unmapped'}: ${issue.message}\n  ${issue.files.join('\n  ')}`);
@@ -953,6 +1071,32 @@ export async function runUpdate(
 }
 ````
 
+````src/engine/bypass.ts
+import type { CommitChange } from './git.js';
+import type { DriftIssue } from './drift.js';
+
+export interface BypassAudit { moduleId: string; commit: string; reason: string }
+export function bypassReason(message: string, moduleId: string): string | undefined {
+  // Only standalone, module-scoped markers with a nonempty justification count.
+  for (const line of message.trimEnd().split(/\r?\n/)) {
+    const match = /^(?:Testweave-Bypass:|@testweave-skip)\s+([\w.-]+)\s+\(([^\r\n]+)\)\s*$/i.exec(line);
+    if (match?.[1] === moduleId && match[2]!.trim()) return match[2]!.trim();
+  }
+  return undefined;
+}
+export function auditedBypasses(issues: DriftIssue[], commits: CommitChange[]): { issues: DriftIssue[]; bypasses: BypassAudit[] } {
+  const bypasses: BypassAudit[] = [];
+  const remaining = issues.filter((issue) => {
+    if (issue.kind !== 'stale-module' || !issue.moduleId) return true;
+    const affected = commits.filter((commit) => commit.files.some((file) => issue.files.includes(file)));
+    if (!affected.length || affected.some((commit) => !bypassReason(commit.message, issue.moduleId!))) return true;
+    bypasses.push(...affected.map((commit) => ({ moduleId: issue.moduleId!, commit: commit.sha, reason: bypassReason(commit.message, issue.moduleId!)! })));
+    return false;
+  });
+  return { issues: remaining, bypasses };
+}
+````
+
 ````src/engine/doctor.ts
 import path from 'node:path';
 import type { ContractStore } from './store.js';
@@ -962,6 +1106,11 @@ import { createTestTruth } from '../schema/test-truth.js';
 import { readConfig, saveConfig, type ProjectConfig } from '../integrations/config.js';
 import { checkHook, installHook } from '../integrations/hooks.js';
 import { hasIdeRules, installIdeRules } from '../integrations/ide.js';
+import picomatch from 'picomatch';
+import { listFiles } from './scan.js';
+import { readSpecSlice, specPointers } from './specs.js';
+import { stat } from 'node:fs/promises';
+import { workspacePath } from './files.js';
 
 export interface Diagnostic { id: string; ok: boolean; repairable: boolean; message: string }
 export interface DoctorDependencies { root: string; git: GitRepository; store: ContractStore; cliPath?: string }
@@ -971,6 +1120,29 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   try {
     const contract = await deps.store.read();
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
+    const listed = await listFiles(deps.root);
+    const files: string[] = [];
+    for (const file of listed) {
+      try { if ((await stat(await workspacePath(deps.root, file))).isFile()) files.push(file); }
+      catch { /* Deleted or escaping candidates are not live workspace paths. */ }
+    }
+    for (const module of contract.modules) {
+      let live = false;
+      for (const pattern of module.paths) {
+        const matches = picomatch(pattern, { dot: true });
+        const ok = files.some((file) => matches(file));
+        live ||= ok;
+        diagnostics.push({ id: `dead-path:${module.id}:${pattern}`, ok, repairable: false, message: `${module.id}: ${pattern} ${ok ? 'matches workspace files' : 'matches no existing files'}` });
+      }
+      if (!live) diagnostics.push({ id: `orphaned-module:${module.id}`, ok: false, repairable: false, message: `${module.id} has no live source paths` });
+    }
+    const pointers = new Set([...specPointers(contract), ...contract.modules.flatMap((module) => specPointers(contract, module))]);
+    for (const pointer of pointers) {
+      try {
+        await readSpecSlice(deps.root, pointer);
+        diagnostics.push({ id: `dead-spec:${pointer}`, ok: true, repairable: false, message: `Spec exists: ${pointer}` });
+      } catch (error) { diagnostics.push({ id: `dead-spec:${pointer}`, ok: false, repairable: false, message: errorMessage(error) }); }
+    }
   } catch (error) {
     diagnostics.push({ id: 'contract', ok: false, repairable: isMissing(error), message: errorMessage(error) });
   }
@@ -1012,9 +1184,12 @@ import type { TestModule, TestTruth } from '../schema/test-truth.js';
 import type { ContractStore } from './store.js';
 import type { GitRepository } from './git.js';
 import { parseTestTruth } from './markdown.js';
+import { isCosmeticChange } from './semantic.js';
+import { auditedBypasses, type BypassAudit } from './bypass.js';
+import { sliceMarkdown, specFile, specPointers } from './specs.js';
 
 export interface DriftIssue {
-  kind: 'unmapped' | 'stale-module' | 'removed-module';
+  kind: 'unmapped' | 'stale-module' | 'removed-module' | 'stale-spec';
   files: string[];
   moduleId?: string;
   message: string;
@@ -1026,8 +1201,9 @@ export interface DriftReport {
   issues: DriftIssue[];
   mode: 'block' | 'warn';
   blocked: boolean;
+  bypasses?: BypassAudit[];
 }
-export interface AnalyzeOptions { base?: string; target?: string; strict?: boolean; emptyBase?: boolean }
+export interface AnalyzeOptions { base?: string; target?: string; strict?: boolean; emptyBase?: boolean; semantic?: boolean; prePush?: boolean }
 export interface DriftAnalyzer { analyze(options?: AnalyzeOptions): Promise<DriftReport> }
 
 function matches(file: string, patterns: string[]): boolean {
@@ -1070,10 +1246,49 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
     if (!newMarkdown) throw new Error('test-truth.md is missing from the checked revision; run testweave init and commit the contract');
     const current = parseTestTruth(newMarkdown);
     const previous = oldMarkdown === undefined ? undefined : parseTestTruth(oldMarkdown);
-    const issues = detectDrift(files, previous, current);
+    let behavioral = files;
+    if (options.semantic && this.git.readFile) {
+      const cosmetic = new Set<string>();
+      for (const file of files) {
+        if (!/\.[cm]?[jt]sx?$/.test(file) || !(sourceFile(file, current) || (previous && sourceFile(file, previous)))) continue;
+        try {
+          if (isCosmeticChange(file, await this.git.readFile(file, base), await this.git.readFile(file, target))) cosmetic.add(file);
+        } catch { /* Unreadable files retain drift instead of being considered cosmetic. */ }
+      }
+      behavioral = files.filter((file) => !cosmetic.has(file));
+    }
+    let issues = detectDrift(behavioral, previous, current);
+    const docModes = [previous?.policy.docDriftMode ?? 'warn', current.policy.docDriftMode ?? 'warn'];
+    const docMode = docModes.includes('block') ? 'block' : docModes.includes('warn') ? 'warn' : 'ignore';
+    if (previous && docMode !== 'ignore') {
+      for (const module of current.modules) {
+        const before = previous.modules.find((entry) => entry.id === module.id);
+        if (!before || testContent(before) !== testContent(module)) continue;
+        const pointers = [...new Set([...specPointers(previous, before), ...specPointers(current, module)])];
+        const stale: string[] = [];
+        for (const pointer of pointers) {
+          const file = specFile(pointer);
+          if (!files.includes(file)) continue;
+          if (this.git.readFile) {
+            try {
+              const old = await this.git.readFile(file, base);
+              const next = await this.git.readFile(file, target);
+              if (old !== undefined && next !== undefined && sliceMarkdown(old, pointer) === sliceMarkdown(next, pointer)) continue;
+            } catch { /* Deleted or invalid sections retain drift. */ }
+          }
+          stale.push(pointer);
+        }
+        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: module.id, files: stale, message: 'Linked spec sections changed without a QA update' });
+      }
+    }
+    let bypasses: BypassAudit[] = [];
+    if (options.prePush && target && this.git.commits && !options.emptyBase) {
+      ({ issues, bypasses } = auditedBypasses(issues, await this.git.commits(base, target)));
+    }
     // A branch cannot silently weaken the policy that its upstream enforces.
     const mode = options.strict || previous?.policy.mode === 'block' ? 'block' : current.policy.mode;
-    return { base, target: target ?? 'working-tree', changedFiles: files, issues, mode, blocked: mode === 'block' && issues.length > 0 };
+    const blocked = issues.some((issue) => issue.kind === 'stale-spec' ? options.strict || docMode === 'block' : mode === 'block');
+    return { base, target: target ?? 'working-tree', changedFiles: files, issues, mode, blocked, ...(bypasses.length ? { bypasses } : {}) };
   }
 }
 ````
@@ -1141,6 +1356,9 @@ export async function workspacePath(root: string, relative: string, io: FileSyst
 
 ````src/engine/git.ts
 import { simpleGit, type SimpleGit } from 'simple-git';
+import { readFile } from 'node:fs/promises';
+import { isMissing, workspacePath } from './files.js';
+import picomatch from 'picomatch';
 
 export interface GitRepository {
   root(): Promise<string>;
@@ -1150,7 +1368,11 @@ export interface GitRepository {
   readContract(ref: string): Promise<string | undefined>;
   hookPath(): Promise<string>;
   emptyTree(): Promise<string>;
+  readFile?(file: string, ref?: string): Promise<string | undefined>;
+  diffForPaths?(paths: string[]): Promise<string>;
+  commits?(base: string, target: string): Promise<CommitChange[]>;
 }
+export interface CommitChange { sha: string; message: string; files: string[] }
 export class SimpleGitRepository implements GitRepository {
   constructor(private readonly git: SimpleGit) {}
   async root(): Promise<string> { return (await this.git.revparse(['--show-toplevel'])).trim(); }
@@ -1174,6 +1396,39 @@ export class SimpleGitRepository implements GitRepository {
     if (!entries) return undefined;
     if (!entries.startsWith('100644 ') && !entries.startsWith('100755 ')) throw new Error('Committed test-truth.md must be a regular file');
     return this.git.show([`${ref}:test-truth.md`]);
+  }
+  async readFile(file: string, ref?: string): Promise<string | undefined> {
+    if (ref) {
+      const entries = await this.git.raw(['ls-tree', '-z', ref, '--', `:(literal)${file}`]);
+      if (!entries) return undefined;
+      if (!/^100(?:644|755) /.test(entries)) throw new Error(`Not a regular file: ${file}`);
+      return this.git.show([`${ref}:${file}`]);
+    }
+    try { return await readFile(await workspacePath(await this.root(), file), 'utf8'); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+  }
+  async diffForPaths(paths: string[]): Promise<string> {
+    if (!paths.length) return '';
+    let base: string;
+    try { base = await this.resolve('HEAD'); } catch { base = await this.emptyTree(); }
+    let diff = await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', base, '--', ...paths]);
+    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+    const matches = picomatch(paths, { dot: true });
+    for (const file of untracked.filter((entry) => matches(entry))) {
+      const content = await this.readFile(file);
+      if (content === undefined || content.includes('\0')) continue;
+      const lines = content.split('\n');
+      if (lines.at(-1) === '') lines.pop();
+      diff += `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => '+' + line).join('\n')}\n`;
+    }
+    return diff;
+  }
+  async commits(base: string, target: string): Promise<CommitChange[]> {
+    const shas = (await this.git.raw(['rev-list', `${base}..${target}`])).trim().split(/\s+/).filter(Boolean);
+    return Promise.all(shas.map(async (sha) => ({ sha,
+      message: await this.git.raw(['show', '-s', '--format=%B', sha]),
+      files: (await this.git.raw(['diff-tree', '--root', '-m', '--no-commit-id', '--name-only', '-r', '-z', sha, '--'])).split('\0').filter(Boolean),
+    })));
   }
   async hookPath(): Promise<string> { return (await this.git.revparse(['--git-path', 'hooks'])).trim(); }
   async emptyTree(): Promise<string> { return (await this.git.raw(['hash-object', '-w', '-t', 'tree', '--stdin'])).trim(); }
@@ -1262,6 +1517,88 @@ export function replaceContractBlock(markdown: string, value: TestTruth): string
 }
 ````
 
+````src/engine/queries.ts
+import picomatch from 'picomatch';
+import { sourcePatternSchema, type TestTruth } from '../schema/test-truth.js';
+import { listFiles } from './scan.js';
+import { createGitRepository } from './git.js';
+import { readSpecSlice, specFile, specPointers, sliceMarkdown } from './specs.js';
+
+/** Keep only hunks intersecting a referenced section in either revision. */
+export function scopedSpecDiff(diff: string, pointer: string, before: string | undefined, after: string): string {
+  if (!pointer.includes('#')) return diff;
+  const range = (markdown: string | undefined): [number, number] | undefined => {
+    if (markdown === undefined) return undefined;
+    try {
+      const section = sliceMarkdown(markdown, pointer);
+      const start = markdown.slice(0, markdown.indexOf(section)).split('\n').length;
+      return [start, start + section.replace(/\n$/, '').split('\n').length - 1];
+    } catch { return undefined; }
+  };
+  const oldRange = range(before), newRange = range(after);
+  const parts = diff.split(/(?=^@@ )/m);
+  const header = parts.shift() ?? '';
+  const hunks = parts.filter((hunk) => {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk);
+    if (!match) return false;
+    const overlaps = (start: number, count: number, section: [number, number] | undefined) => section && start <= section[1] && start + Math.max(1, count) - 1 >= section[0];
+    return overlaps(Number(match[1]), Number(match[2] ?? 1), oldRange) || overlaps(Number(match[3]), Number(match[4] ?? 1), newRange);
+  });
+  return hunks.length ? header + hunks.join('') : '';
+}
+
+export function contractIndex(contract: TestTruth) {
+  return contract.modules.map((module) => ({ id: module.id, paths: module.paths,
+    specs: specPointers(contract, module), tests: module.tests.map(({ id, title }) => ({ id, title })) }));
+}
+export function modulesForFiles(contract: TestTruth, paths: string[]) {
+  paths.forEach((file) => sourcePatternSchema.parse(file));
+  return contract.modules.filter((module) => paths.some((file) => picomatch(module.paths, { dot: true })(file)));
+}
+export async function specContext(root: string, contract: TestTruth, pathOrModuleId: string) {
+  const module = contract.modules.find((entry) => entry.id === pathOrModuleId);
+  const pointers = module ? specPointers(contract, module) : [pathOrModuleId];
+  const sections = await Promise.all(pointers.map(async (pointer) => ({ pointer, content: await readSpecSlice(root, pointer) })));
+  const git = createGitRepository(root);
+  let diff = '';
+  // Non-Git workspaces still support deterministic section reads.
+  try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
+  diff = await git.diffForPaths!(module?.paths ?? []);
+  for (const pointer of pointers) {
+    const file = specFile(pointer);
+    let before: string | undefined;
+    try { before = await git.readFile!(file, await git.resolve('HEAD')); } catch { /* New repository/document. */ }
+    const after = await git.readFile!(file) ?? '';
+    diff += scopedSpecDiff(await git.diffForPaths!([file]), pointer, before, after);
+  }
+  return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
+}
+export async function impact(root: string, contract: TestTruth, paths: string[]) {
+  paths.forEach((file) => sourcePatternSchema.parse(file));
+  const files = await listFiles(root);
+  const matches = picomatch(paths, { dot: true });
+  const selected = [...new Set([...paths.filter((file) => !picomatch.scan(file).isGlob),
+    ...files.filter((file) => matches(file))])];
+  const mapped = new Set(modulesForFiles(contract, selected).map((module) => module.id));
+  const modules = contract.modules.filter((module) => {
+    if (mapped.has(module.id)) return true;
+    return module.paths.some((pattern) => paths.some((query) => {
+      if (query === pattern) return true;
+      return picomatch.scan(query).isGlob &&
+        (picomatch(query, { dot: true })(pattern) || picomatch(pattern, { dot: true })(query));
+    }));
+  });
+  return { paths, files: selected, modules: await Promise.all(modules.map(async (module) => ({
+    id: module.id, paths: module.paths,
+    specs: await Promise.all(specPointers(contract, module).map(async (pointer) => {
+      try { return { pointer, content: await readSpecSlice(root, pointer) }; }
+      catch (error) { return { pointer, error: error instanceof Error ? error.message : String(error) }; }
+    })),
+    tests: module.tests.map(({ id, title, preconditions }) => ({ id, title, preconditions })),
+  }))) };
+}
+````
+
 ````src/engine/scan.ts
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -1290,7 +1627,7 @@ function excludedPath(file: string): boolean {
   return file.split('/').some((part) => excluded.has(part)) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|\.d\.ts$/.test(file);
 }
 
-async function listFiles(root: string): Promise<string[]> {
+export async function listFiles(root: string): Promise<string[]> {
   const git = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
   if (await git.checkIsRepo()) {
     const listed = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
@@ -1353,7 +1690,7 @@ function inspect(file: string, content: string): ScanEvidence {
 }
 
 // Character classes keep literal filenames compatible with the POSIX glob schema.
-function literalGlob(file: string): string {
+export function literalGlob(file: string): string {
   return file.replace(/[\[\]*?{}()!+@]/g, (character) => character === ']' ? '[]]' : '[' + character + ']');
 }
 function uniqueId(base: string, used: Set<string>): string {
@@ -1464,9 +1801,147 @@ export async function scanProject(directory: string, contract: TestTruth, explic
 }
 ````
 
+````src/engine/semantic.ts
+import ts from 'typescript';
+
+/** Conservative JS/TS comparison: uncertain syntax and reflective code retain drift. */
+function fingerprint(file: string, content: string): string | undefined {
+  if (!/\.[cm]?[jt]sx?$/.test(file) || /\b(?:eval|with)\s*\(/.test(content)) return undefined;
+  const options: ts.CompilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.Preserve, noLib: true, noResolve: true, allowJs: true };
+  const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+  const host = ts.createCompilerHost(options);
+  host.getSourceFile = (name) => name === file ? source : undefined;
+  const program = ts.createProgram([file], options, host);
+  if (program.getSyntacticDiagnostics(source).length) return undefined;
+  const checker = program.getTypeChecker();
+  const printer = ts.createPrinter({ removeComments: true });
+  const publicTypes: string[] = [];
+  const referenced = new Set<ts.Declaration>();
+  const collectPublicType = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      for (const declaration of checker.getSymbolAtLocation(node)?.declarations ?? []) {
+        if (referenced.has(declaration) || declaration.getSourceFile() !== source) continue;
+        if (ts.isTypeAliasDeclaration(declaration) || ts.isInterfaceDeclaration(declaration)) {
+          referenced.add(declaration);
+          collectPublicType(declaration);
+        }
+      }
+    }
+    ts.forEachChild(node, collectPublicType);
+  };
+  const typeText = (node: ts.TypeNode | undefined) => {
+    if (!node) return '';
+    collectPublicType(node);
+    return printer.printNode(ts.EmitHint.Unspecified, node, source);
+  };
+  const signature = (node: ts.SignatureDeclaration) => JSON.stringify({
+    parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
+    returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
+  });
+  for (const statement of source.statements) {
+    if (!ts.canHaveModifiers(statement) || !ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isFunctionDeclaration(statement)) publicTypes.push(signature(statement));
+    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) publicTypes.push(printer.printNode(ts.EmitHint.Unspecified, statement, source));
+    if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
+      if (ts.canHaveModifiers(member) && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword)) continue;
+      if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) publicTypes.push(signature(member));
+      if (ts.isPropertyDeclaration(member)) publicTypes.push(typeText(member.type));
+    }
+    if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
+      publicTypes.push(typeText(declaration.type));
+      if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) publicTypes.push(signature(declaration.initializer));
+    }
+  }
+  publicTypes.push(...[...referenced].map((declaration) => printer.printNode(ts.EmitHint.Unspecified, declaration, source)));
+  const locals = new Map<ts.Symbol, string>();
+  const protectedSymbols = new Set<ts.Symbol>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isShorthandPropertyAssignment(node)) {
+      const symbol = checker.getShorthandAssignmentValueSymbol(node);
+      if (symbol) protectedSymbols.add(symbol);
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.findAncestor(node, ts.isFunctionLike) &&
+      !(node.initializer && (ts.isFunctionExpression(node.initializer) || ts.isArrowFunction(node.initializer) || ts.isClassExpression(node.initializer)))) {
+      const symbol = checker.getSymbolAtLocation(node.name);
+      if (symbol) locals.set(symbol, `__testweave_local_${locals.size}`);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+  const transformed = ts.transform(source, [(context) => {
+    const visit: ts.Visitor = (node) => {
+      if (ts.isIdentifier(node)) {
+        const symbol = checker.getSymbolAtLocation(node);
+        const name = symbol && !protectedSymbols.has(symbol) ? locals.get(symbol) : undefined;
+        if (name) return ts.factory.createIdentifier(name);
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return (node) => ts.visitNode(node, visit) as ts.SourceFile;
+  }]);
+  try {
+    const printed = ts.createPrinter({ removeComments: true }).printFile(transformed.transformed[0]!);
+    const output = ts.transpileModule(printed, { fileName: file, compilerOptions: { ...options, removeComments: true } }).outputText;
+    const parsed = ts.createSourceFile(file, output, ts.ScriptTarget.Latest, true);
+    function structure(node: ts.Node): unknown {
+      const children: unknown[] = [];
+      ts.forEachChild(node, (child) => { children.push(structure(child)); });
+      return [node.kind, children.length ? children : 'text' in node ? node.text : node.getText(parsed)];
+    }
+    return JSON.stringify([publicTypes, structure(parsed)]);
+  } finally { transformed.dispose(); }
+}
+export function isCosmeticChange(file: string, before: string | undefined, after: string | undefined): boolean {
+  if (before === undefined || after === undefined) return false;
+  const previous = fingerprint(file, before);
+  return previous !== undefined && previous === fingerprint(file, after);
+}
+````
+
+````src/engine/specs.ts
+import { readFile, stat } from 'node:fs/promises';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import { specPointerSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
+import { workspacePath } from './files.js';
+
+interface MarkdownNode { type: string; value?: string; depth?: number; children?: MarkdownNode[]; position?: { start: { offset?: number }; end: { offset?: number } } }
+function textOf(node: MarkdownNode): string { return node.value ?? node.children?.map(textOf).join('') ?? ''; }
+export function specFile(pointer: string): string { return pointer.split('#')[0]!; }
+export function specPointers(contract: TestTruth, module?: TestModule): string[] {
+  return [...new Set([...(contract.docs ?? []), ...(module?.docs ?? []), ...(module?.specs ?? [])])];
+}
+export function sliceMarkdown(markdown: string, pointer: string): string {
+  specPointerSchema.parse(pointer);
+  const anchor = pointer.split('#')[1];
+  if (!anchor) return markdown;
+  const tree = unified().use(remarkParse).parse(markdown);
+  const nodes = tree.children as MarkdownNode[];
+  const used = new Set<string>();
+  for (const [index, node] of nodes.entries()) {
+    if (node.type !== 'heading') continue;
+    const base = textOf(node).toLowerCase().replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '').replace(/\s/g, '-');
+    let slug = base;
+    for (let suffix = 1; used.has(slug); suffix++) slug = `${base}-${suffix}`;
+    used.add(slug);
+    if (slug !== anchor) continue;
+    const next = nodes.slice(index + 1).find((entry) => entry.type === 'heading' && entry.depth! <= node.depth!);
+    return markdown.slice(node.position!.start.offset, next?.position?.start.offset ?? markdown.length);
+  }
+  throw new Error(`Missing heading: ${pointer}`);
+}
+export async function readSpecSlice(root: string, pointer: string): Promise<string> {
+  specPointerSchema.parse(pointer);
+  const file = await workspacePath(root, specFile(pointer));
+  const info = await stat(file);
+  if (!info.isFile() || info.size > 1_000_000) throw new Error(`Spec must be a file no larger than 1 MB: ${pointer}`);
+  return sliceMarkdown(await readFile(file, 'utf8'), pointer);
+}
+````
+
 ````src/engine/store.ts
 import path from 'node:path';
-import { testModuleSchema, testTruthSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
+import { testCaseSchema, testModuleSchema, testTruthSchema, type TestCase, type TestModule, type TestTruth } from '../schema/test-truth.js';
 import { atomicWrite, nodeFileSystem, readOptional, rejectSymlink, type FileSystem } from './files.js';
 import { parseTestTruth, replaceContractBlock, serializeTestTruth } from './markdown.js';
 
@@ -1474,8 +1949,10 @@ export interface ContractStore {
   read(): Promise<TestTruth>;
   readMarkdown(): Promise<string>;
   initialize(contract: TestTruth): Promise<boolean>;
-  upsert(module: TestModule): Promise<TestTruth>;
+  upsert(module: TestModule, expected?: TestTruth): Promise<TestTruth>;
   append(modules: TestModule[], expected: TestTruth): Promise<TestTruth>;
+  upsertCase(moduleId: string, testCase: TestCase): Promise<TestTruth>;
+  removeCase(moduleId: string, testId: string): Promise<TestTruth>;
 }
 export class MarkdownContractStore implements ContractStore {
   readonly file: string;
@@ -1490,9 +1967,10 @@ export class MarkdownContractStore implements ContractStore {
     await this.io.writeFile(this.file, serializeTestTruth(contract), { encoding: 'utf8', flag: 'wx' });
     return true;
   }
-  async upsert(input: TestModule): Promise<TestTruth> {
+  async upsert(input: TestModule, expected?: TestTruth): Promise<TestTruth> {
     const module = testModuleSchema.parse(input);
     return this.update((current) => {
+      if (expected && JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during review; retry');
       const exists = current.modules.some((entry) => entry.id === module.id);
       return { ...current, modules: exists
         ? current.modules.map((entry) => entry.id === module.id ? module : entry)
@@ -1503,6 +1981,21 @@ export class MarkdownContractStore implements ContractStore {
     return this.update((current) => {
       if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Contract changed during scan; retry');
       return { ...current, modules: [...current.modules, ...modules] };
+    });
+  }
+  async upsertCase(moduleId: string, input: TestCase): Promise<TestTruth> {
+    const testCase = testCaseSchema.parse(input);
+    return this.updateCases(moduleId, (tests) => tests.some((test) => test.id === testCase.id)
+      ? tests.map((test) => test.id === testCase.id ? testCase : test) : [...tests, testCase]);
+  }
+  async removeCase(moduleId: string, testId: string): Promise<TestTruth> {
+    return this.updateCases(moduleId, (tests) => tests.filter((test) => test.id !== testId));
+  }
+  private async updateCases(moduleId: string, transform: (tests: TestCase[]) => TestCase[]): Promise<TestTruth> {
+    return this.update((current) => {
+      if (!current.modules.some((module) => module.id === moduleId)) throw new Error(`Unknown module: ${moduleId}`);
+      return { ...current, modules: current.modules.map((module) => module.id === moduleId
+        ? { ...module, tests: transform(module.tests) } : module) };
     });
   }
   private async update(transform: (current: TestTruth) => TestTruth): Promise<TestTruth> {
@@ -1523,6 +2016,17 @@ export class MarkdownContractStore implements ContractStore {
 }
 ````
 
+````src/engine/wire.ts
+/** Omit only fields whose contract defaults can be restored without information loss. */
+export function wireJson(value: unknown, compact = false): string {
+  return JSON.stringify(value, compact ? (key, entry: unknown) => {
+    if ((key === 'preconditions' || key === 'tags') && Array.isArray(entry) && !entry.length) return undefined;
+    if (key === 'type' && entry === 'regression') return undefined;
+    return entry;
+  } : undefined, compact ? undefined : 2);
+}
+````
+
 ````src/index.ts
 export * from './schema/test-truth.js';
 export * from './engine/markdown.js';
@@ -1532,6 +2036,11 @@ export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
 export * from './engine/doctor.js';
+export * from './engine/queries.js';
+export * from './engine/specs.js';
+export * from './engine/semantic.js';
+export * from './engine/bypass.js';
+export * from './engine/wire.js';
 export * from './integrations/config.js';
 export * from './integrations/agents.js';
 export * from './integrations/skills.js';
@@ -1545,6 +2054,7 @@ export * from './llm/factory.js';
 export * from './llm/prompts.js';
 export * from './llm/openai.js';
 export * from './llm/anthropic.js';
+export * from './llm/compatible.js';
 export * from './mcp/server.js';
 ````
 
@@ -1872,16 +2382,7 @@ export const RULE_START = '<!-- testweave:start -->';
 export const RULE_END = '<!-- testweave:end -->';
 export const QA_RULES = `${RULE_START}
 ## TestWeave QA contract
-- Read available project context (project-context.md, README, AGENTS.md, architecture and requirements docs) before planning tests or changing source behavior.
-- Read test-truth.md before changing source behavior.
-- For existing projects, run testweave scan to discover modules, journeys and automated tests; review drafts before adopting them.
-- Every changed source file must match a registered module's paths.
-- Update that module's manual test actions and expected results alongside code changes.
-- Include success, failure, and boundary scenarios. Keep test IDs stable and globally unique.
-- Never claim a test was executed without actual evidence. This contract describes tests, not execution results.
-- Use the testweave MCP upsert_test_module tool or edit the authoritative json testweave block.
-- Run testweave sync before committing; commit test-truth.md with the corresponding source changes.
-- Do not bypass the pre-push hook or weaken policy to conceal QA drift.
+Read project context first. Use get_modules_for_files and get_spec_slice before edits; upsert_test_case preserves other scenarios. Read test-truth.md only when scoped tools are unavailable. Keep IDs stable; cover success, failure and boundaries. Run testweave sync and commit code with definitions. Never claim execution or weaken policy. Follow the installed testweave skill's commands and references; use scan for adoption and impact before edits.
 ${RULE_END}`;
 
 export const IDE_FILES: Record<string, string> = {
@@ -2222,17 +2723,22 @@ export async function hasVsCodeServer(root: string): Promise<boolean> {
 import { z } from 'zod';
 import { testModuleSchema, type TestModule } from '../schema/test-truth.js';
 import { QA_SYSTEM_PROMPT } from './prompts.js';
+import { wireJson } from '../engine/wire.js';
 
-export interface AuthorRequest { context: string; existing?: TestModule }
+export interface AuthorRequest { context: string; existing?: TestModule; compact?: boolean }
 export interface ModuleAuthor { author(request: AuthorRequest): Promise<TestModule> }
 export interface StructuredGenerator { generate(system: string, input: string): Promise<unknown> }
-export const authorRequestSchema = z.strictObject({ context: z.string().trim().min(1).max(200_000), existing: testModuleSchema.optional() });
+export const authorRequestSchema = z.strictObject({ context: z.string().trim().min(1).max(200_000), existing: testModuleSchema.optional(), compact: z.boolean().optional() });
 
 export class ValidatedModuleAuthor implements ModuleAuthor {
   constructor(private readonly generator: StructuredGenerator) {}
   async author(input: AuthorRequest): Promise<TestModule> {
     const request = authorRequestSchema.parse(input);
-    const result = testModuleSchema.parse(await this.generator.generate(QA_SYSTEM_PROMPT, JSON.stringify(request)));
+    const { compact, ...payload } = request;
+    const generated = await this.generator.generate(QA_SYSTEM_PROMPT, wireJson(payload, compact));
+    const normalized: unknown = JSON.parse(JSON.stringify(generated, (key, value: unknown) =>
+      (key === 'docs' || key === 'specs' || key === 'refs') && value === null ? undefined : value));
+    const result = testModuleSchema.parse(normalized);
     if (request.existing && result.id !== request.existing.id) throw new Error('AI changed the existing module ID; draft rejected');
     const ids = result.tests.map((test) => test.id);
     if (new Set(ids).size !== ids.length) throw new Error('AI returned duplicate test IDs');
@@ -2265,14 +2771,45 @@ export class AnthropicGenerator implements StructuredGenerator {
 }
 ````
 
+````src/llm/compatible.ts
+import type OpenAI from 'openai';
+import { zodResponseFormat } from 'openai/helpers/zod';
+import { structuredModuleSchema } from '../schema/test-truth.js';
+import type { StructuredGenerator } from './adapter.js';
+
+export class CompatibleGenerator implements StructuredGenerator {
+  constructor(private readonly client: OpenAI, private readonly model: string) {}
+  async generate(system: string, input: string): Promise<unknown> {
+    const response = await this.client.chat.completions.create({
+      model: this.model, messages: [{ role: 'system', content: system }, { role: 'user', content: input }],
+      response_format: zodResponseFormat(structuredModuleSchema, 'test_module'),
+    });
+    const choice = response.choices[0];
+    if (choice?.finish_reason !== 'stop' || !choice.message.content || choice.message.refusal) throw new Error('Provider did not return a complete structured module');
+    return JSON.parse(choice.message.content) as unknown;
+  }
+}
+````
+
 ````src/llm/factory.ts
 import { z } from 'zod';
 import { ValidatedModuleAuthor, type ModuleAuthor } from './adapter.js';
 
-export const providerSchema = z.enum(['openai', 'anthropic']);
+export const providerSchema = z.enum(['openai', 'anthropic', 'ollama', 'custom', 'gemini']);
 export type Provider = z.infer<typeof providerSchema>;
-export async function createModuleAuthor(provider: Provider, model: string, env: NodeJS.ProcessEnv = process.env): Promise<ModuleAuthor> {
+export async function createModuleAuthor(provider: Provider, model: string, env: NodeJS.ProcessEnv = process.env, baseUrl?: string): Promise<ModuleAuthor> {
   if (!model.trim()) throw new Error('An explicit model is required for AI authoring');
+  if (baseUrl && provider !== 'custom' && provider !== 'ollama') throw new Error('--base-url requires custom or ollama');
+  if (provider === 'ollama' || provider === 'custom' || provider === 'gemini') {
+    const baseURL = baseUrl ?? (provider === 'ollama' ? 'http://localhost:11434/v1' : provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai/' : undefined);
+    if (!baseURL) throw new Error('Custom authoring requires --base-url');
+    const url = new URL(baseURL);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Base URL must be an HTTP(S) endpoint without credentials, query or fragment');
+    if (provider === 'gemini' && !env.GEMINI_API_KEY) throw new Error('Set GEMINI_API_KEY to use Gemini authoring');
+    const apiKey = provider === 'gemini' ? env.GEMINI_API_KEY! : provider === 'custom' ? env.TESTWEAVE_API_KEY ?? 'local' : 'ollama';
+    const [{ default: OpenAI }, { CompatibleGenerator }] = await Promise.all([import('openai'), import('./compatible.js')]);
+    return new ValidatedModuleAuthor(new CompatibleGenerator(new OpenAI({ apiKey, baseURL, timeout: 60_000, maxRetries: 2 }), model));
+  }
   if (provider === 'openai') {
     if (!env.OPENAI_API_KEY) throw new Error('Set OPENAI_API_KEY to use OpenAI authoring');
     const [{ default: OpenAI }, { OpenAiGenerator }] = await Promise.all([import('openai'), import('./openai.js')]);
@@ -2287,7 +2824,7 @@ export async function createModuleAuthor(provider: Provider, model: string, env:
 ````src/llm/openai.ts
 import OpenAI from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
-import { testModuleSchema } from '../schema/test-truth.js';
+import { structuredModuleSchema } from '../schema/test-truth.js';
 import type { StructuredGenerator } from './adapter.js';
 
 export class OpenAiGenerator implements StructuredGenerator {
@@ -2296,7 +2833,7 @@ export class OpenAiGenerator implements StructuredGenerator {
     const response = await this.client.responses.parse({
       model: this.model,
       input: [{ role: 'system', content: system }, { role: 'user', content: input }],
-      text: { format: zodTextFormat(testModuleSchema, 'test_module') },
+      text: { format: zodTextFormat(structuredModuleSchema, 'test_module') },
       max_output_tokens: 12_000,
     });
     if (!response.output_parsed || response.status !== 'completed') throw new Error('OpenAI did not return a complete structured module');
@@ -2326,36 +2863,73 @@ import { z } from 'zod';
 import type { ContractStore } from '../engine/store.js';
 import type { DriftAnalyzer } from '../engine/drift.js';
 import { errorMessage } from '../engine/doctor.js';
-import { testModuleSchema } from '../schema/test-truth.js';
+import { testModuleSchema, testCaseSchema, sourcePatternSchema } from '../schema/test-truth.js';
+import { contractIndex, modulesForFiles, specContext, impact } from '../engine/queries.js';
+import { wireJson } from '../engine/wire.js';
 import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
 
-export interface McpDependencies { root: string; store: ContractStore; analyzer: DriftAnalyzer }
-async function result(action: () => Promise<unknown>): Promise<CallToolResult> {
+export interface McpDependencies { root: string; store: ContractStore; analyzer: DriftAnalyzer; compact?: boolean }
+async function result(action: () => Promise<unknown>, compact = false): Promise<CallToolResult> {
   try {
     const value = await action();
-    return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+    return { content: [{ type: 'text', text: wireJson(value, compact) }] };
   } catch (error) {
     return { isError: true, content: [{ type: 'text', text: errorMessage(error) }] };
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.6.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.7.0' });
+  const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
+  const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+  server.registerTool('get_contract_index', {
+    description: 'Read only module IDs, paths, spec pointers and test IDs/titles.', inputSchema: {}, annotations: readOnly,
+  }, async () => respond(async () => contractIndex(await deps.store.read())));
+  server.registerTool('get_modules_for_files', {
+    description: 'Read only modules matching the supplied edited file paths.',
+    inputSchema: { paths: z.array(sourcePatternSchema).min(1).max(100) }, annotations: readOnly,
+  }, async ({ paths }) => respond(async () => modulesForFiles(await deps.store.read(), paths)));
+  server.registerTool('get_module_by_path', {
+    description: 'Read modules matching one edited file path.', inputSchema: { path: sourcePatternSchema }, annotations: readOnly,
+  }, async ({ path }) => respond(async () => modulesForFiles(await deps.store.read(), [path])));
+  server.registerTool('get_spec_slice', {
+    description: 'Read linked Markdown sections, uncommitted diff hunks and test headers for a module or document pointer.',
+    inputSchema: { pathOrModuleId: z.string().min(1).max(500) }, annotations: readOnly,
+  }, async ({ pathOrModuleId }) => respond(async () => specContext(deps.root, await deps.store.read(), pathOrModuleId)));
+  server.registerTool('impact', {
+    description: 'Preview modules, linked spec sections, test IDs and preconditions for planned paths/globs without editing files.',
+    inputSchema: { paths: z.array(sourcePatternSchema).min(1).max(100) }, annotations: readOnly,
+  }, async ({ paths }) => respond(async () => impact(deps.root, await deps.store.read(), paths)));
+  server.registerTool('upsert_test_case', {
+    description: 'Create or replace one test case under the contract lock. IDs are globally unique.',
+    inputSchema: { moduleId: z.string().min(1), testCase: testCaseSchema },
+    annotations: { ...readOnly, readOnlyHint: false, destructiveHint: true },
+  }, async ({ moduleId, testCase }) => respond(async () => {
+    await deps.store.upsertCase(moduleId, testCase); return { moduleId, testId: testCase.id };
+  }));
+  server.registerTool('remove_test_case', {
+    description: 'Remove one test case under the contract lock. Removing the final case is rejected.',
+    inputSchema: { moduleId: z.string().min(1), testId: z.string().min(1) },
+    annotations: { ...readOnly, readOnlyHint: false, destructiveHint: true },
+  }, async ({ moduleId, testId }) => respond(async () => {
+    await deps.store.removeCase(moduleId, testId); return { moduleId, testId };
+  }));
   const uri = pathToFileURL(path.join(deps.root, 'test-truth.md')).href;
   server.registerResource('living-test-contract', uri, {
     title: 'TestWeave Living Test Contract', description: 'Authoritative manual QA module contract', mimeType: 'text/markdown',
   }, async () => ({ contents: [{ uri, mimeType: 'text/markdown', text: await deps.store.readMarkdown() }] }));
   server.registerTool('analyze_code_drift', {
     description: 'Compare working source and QA modules with an upstream revision. Read-only; missing upstream is an error.',
-    inputSchema: { base: z.string().min(1).optional(), strict: z.boolean().optional() },
+    inputSchema: { base: z.string().min(1).optional(), strict: z.boolean().optional(), semantic: z.boolean().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ base, strict }) => result(() => deps.analyzer.analyze({
+  }, async ({ base, strict, semantic }) => respond(() => deps.analyzer.analyze({
+    ...(semantic !== undefined ? { semantic } : {}),
     ...(base ? { base } : {}), ...(strict !== undefined ? { strict } : {}),
   })));
   server.registerTool('upsert_test_module', {
     description: 'Create or replace one complete QA module by ID in test-truth.md. Existing test IDs should be preserved. Does not claim execution.',
     inputSchema: { module: testModuleSchema },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ module }) => result(async () => {
+  }, async ({ module }) => respond(async () => {
     const contract = await deps.store.upsert(module);
     return { moduleId: module.id, moduleCount: contract.modules.length, resource: uri };
   }));
@@ -2363,7 +2937,7 @@ export function createMcpServer(deps: McpDependencies): McpServer {
     description: 'Return CSV or JSON test definitions for Jira, Xray, or Zephyr. JSON requires projectKey. Returns content without writing or uploading.',
     inputSchema: exportOptionsSchema.shape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (options) => result(async () => generateExport(await deps.store.read(), options)));
+  }, async (options) => respond(async () => generateExport(await deps.store.read(), options)));
   return server;
 }
 export async function serveMcp(deps: McpDependencies): Promise<McpServer> {
@@ -2385,6 +2959,12 @@ export const sourcePatternSchema = z.string().min(1).max(500).refine(
   'Use a positive, workspace-relative POSIX glob without parent traversal',
 );
 export const testStepSchema = z.strictObject({ action: text, data: z.string().max(20_000), expected: text });
+export const specPointerSchema = z.string().min(1).max(500).refine((value) => {
+  const [file, anchor, ...extra] = value.split('#');
+  return !!file && !extra.length && !/[\r\n\0]/.test(value) && (anchor === undefined || anchor.length > 0) &&
+    !/^[\\/]|[:\\\r\n\0*?]/.test(file) && !file.split('/').includes('..') &&
+    !/(?:^|\/)superpowers\/plans\//.test(file);
+}, 'Use a permanent workspace-relative document pointer with an optional heading anchor');
 
 export const TEST_TYPES = [
   'unit',
@@ -2477,9 +3057,10 @@ const baseTestCaseSchema = z.strictObject({
   title: text,
   type: testTypeSchema.default('regression'),
   priority: z.enum(['low', 'medium', 'high', 'critical']),
-  preconditions: z.array(text).max(100),
+  preconditions: z.array(text).max(100).default([]),
   steps: z.array(testStepSchema).min(1).max(500),
-  tags: z.array(z.string().trim().min(1).max(100)).max(100),
+  tags: z.array(z.string().trim().min(1).max(100)).max(100).default([]),
+  refs: z.array(text).max(100).optional(),
 });
 
 export const testCaseSchema = z.preprocess((input) => {
@@ -2498,15 +3079,25 @@ export const testModuleSchema = z.strictObject({
   name: text,
   description: text,
   paths: z.array(sourcePatternSchema).min(1).max(100),
+  docs: z.array(specPointerSchema).max(100).optional(),
+  specs: z.array(specPointerSchema).max(100).optional(),
   tests: z.array(testCaseSchema).min(1).max(1000),
+});
+// Strict-output APIs require nullable optional fields. Normalize nulls before storage.
+export const structuredModuleSchema = testModuleSchema.extend({
+  docs: z.array(specPointerSchema).max(100).nullable().optional(),
+  specs: z.array(specPointerSchema).max(100).nullable().optional(),
+  tests: z.array(baseTestCaseSchema.extend({ refs: z.array(text).max(100).nullable().optional() })).min(1).max(1000),
 });
 export const testTruthSchema = z.strictObject({
   schemaVersion: z.literal(1),
   project: text,
+  docs: z.array(specPointerSchema).max(100).optional(),
   policy: z.strictObject({
     mode: z.enum(['block', 'warn']),
     sourceGlobs: z.array(sourcePatternSchema).min(1).max(100),
     ignoreGlobs: z.array(sourcePatternSchema).max(100),
+    docDriftMode: z.enum(['warn', 'block', 'ignore']).optional(),
   }),
   modules: z.array(testModuleSchema).max(10_000),
 }).superRefine((contract, context) => {
@@ -2543,37 +3134,12 @@ export function createTestTruth(project: string): TestTruth {
 ````skills/testweave/SKILL.md
 ---
 name: testweave
-description: Keep manual QA contracts aligned with source changes through TestWeave CLI and MCP tools. Use when adopting an existing project, inspecting or changing code, maintaining test-truth.md, checking QA drift, or exporting functional test definitions.
+description: Maintain manual QA definitions alongside source changes.
 ---
 
-# TestWeave QA Contract Skill
+Read project context first. Query affected modules and specs; update stable test IDs. Cover success, failure and boundaries. Run sync; commit definitions with code. Never claim execution.
 
-Maintain functional QA scenarios in `test-truth.md` alongside the behavior they describe. Read only the command and reference documents relevant to the task.
-
-## Shared workflow
-
-1. Read available project context first: project-context.md, README, AGENTS.md, architecture, requirements and user-journey documentation. Use it to understand existing behavior and acceptance criteria.
-2. Read `test-truth.md` before changing behavior. Every changed source file must match a registered module's paths.
-3. Update the affected module's scenarios alongside its code. Preserve existing module and globally unique test IDs, and include success, failure and boundary cases.
-4. Distinguish test definitions from execution evidence. Never claim tests ran without evidence. Discovery drafts marked `needs-review` require specific inputs and observable expected outcomes.
-5. Run `testweave sync` against an available baseline and resolve drift before committing code and contract together. Preserve enforcement policy and Git hooks.
-
-## Choose the command guide
-
-| Task | Read |
-| --- | --- |
-| Adopt an existing project; discover modules, functions, journeys and tests | [commands/scan.md](commands/scan.md) |
-| Initialize a workspace and select agent integrations | [commands/init.md](commands/init.md) |
-| Refresh installed skills, rules, MCP registrations and hooks | [commands/update.md](commands/update.md) |
-| Check changes against the QA contract; interpret drift | [commands/sync.md](commands/sync.md) |
-| Diagnose or repair workspace setup | [commands/doctor.md](commands/doctor.md) |
-| Export QA definitions or request an AI module draft | [commands/generate.md](commands/generate.md) |
-| Configure MCP clients or maintain contracts through MCP | [commands/mcp.md](commands/mcp.md) |
-
-## References
-
-- Read [references/contract-schema.md](references/contract-schema.md) when authoring or validating modules, paths and test cases.
-- Read [references/functional-testing.md](references/functional-testing.md) when choosing test types or designing functional scenarios.
+Use [commands](commands/index.md), [MCP](commands/mcp.md), [update](commands/update.md), and [schema](references/contract-schema.md) as needed.
 ````
 
 ````skills/testweave/commands/doctor.md
@@ -2588,6 +3154,8 @@ testweave doctor --fix
 The terminal report shows a diagnostics heading, aligned OK/FAIL rows with relevant file paths, installation and workspace details, and a passed/total check summary. Disabled hooks appear as information and are not counted. Failed checks include automatic or manual repair guidance; `--fix` reports the final results after repair. `--json` emits only the diagnostic array for scripts.
 
 Doctor validates the contract, setup configuration, selected IDE rules/MCP registrations, every managed skill document, and enabled Git hook. Missing, outdated or modified command/reference files make the skill installation unhealthy.
+
+It also reports `dead-path` for module globs matching no existing workspace files, `orphaned-module` when all of a module's paths are dead, and `dead-spec` for missing linked docs/specs or heading anchors. These are non-repairable findings: inspect and update pointers/scenarios manually. Doctor never deletes definitions to hide these problems.
 
 `--fix` repairs supported missing or outdated integrations using the package's authoritative bundle. It preserves authored contracts, surrounding IDE instructions, other MCP servers and unrelated files in skill directories. Malformed contracts or unsupported configuration problems require manual repair; inspect diagnostics before editing them.
 
@@ -2615,9 +3183,29 @@ testweave generate --provider openai --model <model-id> --context docs/approved-
 testweave generate --provider anthropic --model <model-id> --context docs/approved-context.md --module authentication
 ```
 
-AI drafting requires an explicit provider, model and context file. Credentials come from `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. Only that context and the selected existing module, when requested, are sent to the provider. Choose context that is appropriate to send.
+AI drafting requires an explicit provider, model and either `--context` or `--module`. Context accepts a heading pointer such as `docs/auth.md#login`. Module drafting includes linked sections, the selected module and uncommitted Git diff hunks. Choose context appropriate to send. Use `--compact` for compact prompts and JSON drafts.
+
+Providers: `openai` (`OPENAI_API_KEY`), `anthropic` (`ANTHROPIC_API_KEY`), `gemini` (`GEMINI_API_KEY`), `ollama` (default `http://localhost:11434/v1`, no key required), and `custom --base-url <url>` (optional `TESTWEAVE_API_KEY`). Ollama also accepts `--base-url`. Compatible endpoints must support Chat Completions with JSON schema output; incomplete, refused or invalid responses fail validation. No live endpoint is needed for core commands.
+
+```sh
+testweave generate --provider ollama --model <local-model> --module authentication --compact
+testweave generate --provider custom --base-url http://localhost:1234/v1 --model <model> --context docs/auth.md#login
+testweave generate --provider gemini --model <model> --module authentication
+```
 
 Drafts are schema-validated and emitted for review; generate does not apply them to the contract. With `--module`, preserve the existing identity and retain required scenarios when applying the complete draft. Read [the contract schema](../references/contract-schema.md) and [functional testing](../references/functional-testing.md) to review its quality.
+````
+
+````skills/testweave/commands/index.md
+# Focused guides
+
+- [Initialize](init.md) or [update](update.md) integrations.
+- [Scan](scan.md) existing projects; review needs-review drafts.
+- [Sync](sync.md) code/spec alignment, semantic filtering and interactive resolution.
+- [Doctor](doctor.md) configuration, dead paths and missing spec anchors.
+- [Generate](generate.md) exports and optional AI drafts.
+- [MCP and impact](mcp.md) scoped context and case-level mutations.
+- [Contract schema](../references/contract-schema.md) and [test design](../references/functional-testing.md).
 ````
 
 ````skills/testweave/commands/init.md
@@ -2650,9 +3238,15 @@ testweave mcp
 
 Use either `--provider` or custom `--config`/`--key` options. Configuration export also accepts `--format json|toml`; provider output must match its native format. Generic exports default to JSON with the `mcpServers` key. Existing servers and supported comments are preserved; malformed configuration requires repair.
 
-Read the `living-test-contract` resource to inspect the authoritative Markdown. Available tools are:
+Prefer scoped tools; the `living-test-contract` resource remains available for full Markdown inspection. Start with `mcp --compact` to omit default empty preconditions/tags and regression types in JSON responses.
 
-- `analyze_code_drift`: read-only working-tree QA check with optional `base` and `strict`; missing upstream requires an explicit base.
+- `get_contract_index`: module IDs, paths, spec pointers and test IDs/titles only.
+- `get_modules_for_files(paths)` / `get_module_by_path(path)`: matching modules only.
+- `get_spec_slice(pathOrModuleId)`: referenced Markdown heading sections, uncommitted Git hunks and test headers. Duplicate headings use `-1`, `-2` suffixes.
+- `impact(paths)`: planned paths/globs to modules, spec sections, test IDs and preconditions. CLI: `testweave impact 'src/auth/**' --json`.
+- `upsert_test_case(moduleId, testCase)` / `remove_test_case(moduleId, testId)`: locked case edits preserving unrelated tests and prose. IDs remain globally unique; the final case cannot be removed. Removing an absent ID is idempotent.
+
+- `analyze_code_drift`: read-only working-tree QA check with optional `base`, `strict`, `semantic`; missing upstream requires an explicit base.
 - `upsert_test_module`: creates or replaces a complete module by ID. Include all scenarios to retain and preserve test IDs.
 - `generate_qa_export`: returns test definitions without writing files or uploading them; JSON requires `projectKey`.
 
@@ -2694,6 +3288,13 @@ Every changed tracked source file needs module coverage. An existing affected mo
 - `unmapped`: add relevant scenarios with matching paths or extend the appropriate module.
 - `stale-module`: revise the affected module's scenarios and regression expectations.
 - `removed-module`: retain coverage and document retired behavior.
+- `stale-spec`: linked spec section changed without a QA update. Unrelated headings do not trigger it. `policy.docDriftMode` defaults to `warn`; `block` enforces and `ignore` suppresses spec drift. Baseline enforcement cannot be weakened by the current contract; `--strict` blocks reported spec drift.
+
+`sync --semantic` ignores comments, formatting, local variable renames and erased type-only changes for parsed JavaScript/TypeScript. Observable runtime changes, unsupported languages, invalid syntax, added/deleted files and reflective eval/with code retain drift. This is a conservative heuristic, not a behavior proof.
+
+`sync --interactive` requires a TTY and cannot combine with JSON or pre-push. Choose mapping, local needs-review scaffolding, or AI drafting with explicit `--provider` and `--model` (optional `--base-url`). Review the preview before applying. Cancellation preserves definitions. Mapping alone does not acknowledge stale tests; drafts still need authored acceptance criteria. The command reruns drift after changes.
+
+For an audited internal refactor, each affected commit may include `Testweave-Bypass: authentication (pure internal refactor)` or `@testweave-skip authentication (reason)` on its own line. `sync --pre-push` clears only that module's stale-code issue when every affected commit has a nonempty reason. Reports retain commit SHAs and reasons. It never clears unmapped, removed-module or spec drift, changes the contract, or trusts dirty working files. Ordinary sync ignores bypasses; first pushes with an empty-tree baseline do not apply them.
 
 Both baseline and current tracking policies and module paths are considered. Weakening policy cannot conceal drift. When paths overlap, all affected modules need review.
 
@@ -2731,6 +3332,8 @@ Missing or modified managed skill files are restored on refresh. Unrelated user 
 - `policy.sourceGlobs`: 1–100 positive workspace-relative POSIX globs covering behavior-bearing files.
 - `policy.ignoreGlobs`: up to 100 exclusion globs.
 - `modules`: up to 10,000 modules; an initial baseline may be empty.
+- Optional `docs`: up to 100 permanent workspace-relative document pointers, optionally with `#heading-slug`.
+- Optional `policy.docDriftMode`: `warn` (default), `block`, or `ignore`; independent of source drift policy.
 
 Paths cannot be absolute, negated, contain backslashes, colons, parent traversal, newlines or nulls. Use forward slashes on Windows. Put exclusions in policy rather than negating module paths. Each pattern is 1–500 characters.
 
@@ -2738,7 +3341,9 @@ Paths cannot be absolute, negated, contain backslashes, colons, parent traversal
 
 A module requires `id`, `name`, `description`, `paths` and `tests`. Module IDs are unique. A module has 1–100 paths and 1–1,000 tests.
 
-A test requires `id`, `title`, `priority`, `preconditions`, `steps` and `tags`. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
+Optional module `docs` and `specs` contain up to 100 document pointers each. These are separate from source `paths`. Do not duplicate spec prose or link ephemeral `docs/superpowers/plans/` files. Anchors use lowercase heading text, punctuation removal and hyphens; duplicates get `-1`, `-2`. Doctor flags missing documents/anchors. Optional test `refs` contains up to 100 issue IDs or document references.
+
+A test requires `id`, `title`, `priority` and `steps`. Omitted `preconditions` and `tags` default to empty arrays for compact wire mode. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
 
 - `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component or e2e. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
 - `priority`: low, medium, high or critical.
@@ -3190,7 +3795,7 @@ test('skill bundle installs authoritative documents with resolvable local links'
   assert.equal(await readFile(installedFile, 'utf8'), TESTWEAVE_SKILL_CONTENT);
   assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
   assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
-    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/init.md', 'commands/mcp.md',
+    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/index.md', 'commands/init.md', 'commands/mcp.md',
     'commands/scan.md', 'commands/sync.md', 'commands/update.md',
     'references/contract-schema.md', 'references/functional-testing.md',
   ]);
@@ -3484,7 +4089,7 @@ test('doctor renders aligned plain diagnostics and an accurate healthy summary',
   assert.match(human.stdout, /Workspace\s+/);
   assert.ok(human.stdout.includes(path.basename(root)));
   assert.match(human.stdout, /Node\.js runtime\s+v\d+/);
-  assert.match(human.stdout, /Skill bundle\s+10 documents/);
+  assert.match(human.stdout, /Skill bundle\s+11 documents/);
   assert.match(human.stdout, /QA contract\s+OK\s+.*test-truth\.md/);
   assert.match(human.stdout, /Claude Code\s+OK\s+.*CLAUDE\.md.*\.mcp\.json.*\.claude\/skills\/testweave/);
   assert.match(human.stdout, /Pre-push hook\s+disabled in project configuration/);
@@ -4009,7 +4614,7 @@ test('compiled CLI exports generic JSON and Codex TOML and injects custom config
   const client = new Client({ name: 'custom-client-test', version: '1.0.0' });
   try {
     await client.connect(new StdioClientTransport({ ...server, stderr: 'pipe' }));
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
     const result = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'xray', format: 'csv' } });
     assert.notEqual(result.isError, true);
     assert.equal((await client.listResources()).resources.length, 1);
@@ -4072,7 +4677,7 @@ test('setup configures MCP, update refreshes launch paths, and doctor repairs mi
   const client = new Client({ name: 'automatic-mcp-test', version: '1.0.0' });
   try {
     await client.connect(new StdioClientTransport({ command: server.command, args: server.args, stderr: 'pipe' }));
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
     assert.equal((await client.listResources()).resources.length, 1);
   } finally { await client.close(); }
 });
@@ -4237,7 +4842,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { createMcpServer } from '../src/mcp/server.js';
 import { repositoryFixture, moduleFixture } from './helpers.js';
 
-test('MCP exposes the contract and validates all three tools', async (t) => {
+test('MCP exposes the contract and validates scoped and mutation tools', async (t) => {
   const { context, base, root } = await repositoryFixture(t);
   const server = createMcpServer(context);
   const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -4246,7 +4851,7 @@ test('MCP exposes the contract and validates all three tools', async (t) => {
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['analyze_code_drift', 'generate_qa_export', 'upsert_test_module']);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['analyze_code_drift', 'generate_qa_export', 'get_contract_index', 'get_module_by_path', 'get_modules_for_files', 'get_spec_slice', 'impact', 'remove_test_case', 'upsert_test_case', 'upsert_test_module']);
   const { resources } = await client.listResources();
   assert.equal(resources[0]?.uri, pathToFileURL(path.join(root, 'test-truth.md')).href);
   const resource = await client.readResource({ uri: resources[0]!.uri });
@@ -4269,7 +4874,7 @@ test('compiled MCP process uses clean stdio and completes a protocol handshake',
   t.after(async () => { await client.close(); });
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 3);
+  assert.equal(result.tools.length, 10);
 });
 ````
 
@@ -4490,6 +5095,317 @@ test('linked context outside the workspace is rejected and directory junctions a
 });
 ````
 
+````tests/v070.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import OpenAI from 'openai';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { testTruthSchema, specPointerSchema } from '../src/schema/test-truth.js';
+import { MarkdownContractStore } from '../src/engine/store.js';
+import { sliceMarkdown, readSpecSlice } from '../src/engine/specs.js';
+import { contractIndex, modulesForFiles, impact, specContext, scopedSpecDiff } from '../src/engine/queries.js';
+import { wireJson } from '../src/engine/wire.js';
+import { isCosmeticChange } from '../src/engine/semantic.js';
+import { auditedBypasses, bypassReason } from '../src/engine/bypass.js';
+import { diagnose } from '../src/engine/doctor.js';
+import { createModuleAuthor } from '../src/llm/factory.js';
+import { CompatibleGenerator } from '../src/llm/compatible.js';
+import { ValidatedModuleAuthor } from '../src/llm/adapter.js';
+import { createMcpServer } from '../src/mcp/server.js';
+import { resolveDrift, type ResolverUI } from '../src/cli/resolve.js';
+import { runSync } from '../src/cli/sync.js';
+import { serializeTestTruth } from '../src/engine/markdown.js';
+import { TESTWEAVE_SKILL_CONTENT } from '../src/integrations/skills.js';
+import { QA_RULES } from '../src/integrations/ide.js';
+
+test('skill and rule entrypoints have a small text budget and route to focused guidance', () => {
+  assert.ok(TESTWEAVE_SKILL_CONTENT.length < 550);
+  assert.ok(QA_RULES.length < 600);
+  assert.match(TESTWEAVE_SKILL_CONTENT, /commands\/index.md/);
+  assert.match(QA_RULES, /get_modules_for_files/);
+});
+
+test('compiled CLI exposes impact and semantic sync with correct exit behavior', async (t) => {
+  const { root } = await repositoryFixture(t);
+  const exec = promisify(execFile);
+  const cli = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
+  const preview = await exec(process.execPath, [cli, '--cwd', root, 'impact', 'src/auth/future.ts', '--compact']);
+  assert.equal(JSON.parse(preview.stdout).modules[0].id, 'auth');
+  await writeFile(path.join(root, 'src/auth/login.ts'), '// cosmetic\nexport const login=1;');
+  const synced = await exec(process.execPath, [cli, '--cwd', root, 'sync', '--base', 'HEAD', '--semantic', '--json']);
+  assert.equal(JSON.parse(synced.stdout).blocked, false);
+  await assert.rejects(exec(process.execPath, [cli, '--cwd', root, 'sync', '--interactive']), (error: unknown) =>
+    error instanceof Error && 'code' in error && error.code === 2);
+});
+
+test('compact contracts restore defaults while preserving required arrays and arbitrary step data', () => {
+  const contract = contractFixture();
+  contract.modules[0]!.tests[0] = { ...moduleFixture.tests[0]!, type: 'regression', preconditions: [], tags: [] };
+  const compact = wireJson(contract, true);
+  assert.ok(compact.length < wireJson(contract).length);
+  assert.doesNotMatch(compact, /"tags"|"preconditions"|"type"/);
+  assert.deepEqual(testTruthSchema.parse(JSON.parse(compact)), contract);
+  assert.match(compact, /"ignoreGlobs"/);
+});
+
+test('spec slicing uses Markdown headings, nested sections, duplicate anchors and ignores code fences', () => {
+  const md = '# Root\nintro\n## Sign *in*\none\n### Child\ntwo\n```md\n## Fake\n```\n## Sign in\nsecond\n';
+  assert.equal(sliceMarkdown(md, 'docs/a.md#sign-in'), '## Sign *in*\none\n### Child\ntwo\n```md\n## Fake\n```\n');
+  assert.equal(sliceMarkdown(md, 'docs/a.md#sign-in-1'), '## Sign in\nsecond\n');
+  assert.throws(() => sliceMarkdown(md, 'docs/a.md#fake'), /Missing heading/);
+  assert.equal(sliceMarkdown('Heading\n=======\ntext', 'a.md#heading'), 'Heading\n=======\ntext');
+  for (const pointer of ['../a.md', '/a.md', 'C:/a.md', 'a.md#', 'docs/superpowers/plans/task.md']) assert.equal(specPointerSchema.safeParse(pointer).success, false);
+});
+
+test('scoped reads return matching modules, slices and hunks without unrelated cases', async (t) => {
+  const { context, root } = await repositoryFixture(t);
+  await mkdir(path.join(root, 'docs'));
+  await writeFile(path.join(root, 'docs/auth.md'), '# Auth\n## Login\nCredentials\n## Other\nUnrelated\n');
+  await context.store.upsert({ ...moduleFixture, specs: ['docs/auth.md#login'] });
+  const contract = await context.store.read();
+  const index = contractIndex(contract);
+  assert.deepEqual(Object.keys(index[0]!), ['id', 'paths', 'specs', 'tests']);
+  assert.deepEqual(Object.keys(index[0]!.tests[0]!), ['id', 'title']);
+  assert.equal(modulesForFiles(contract, ['src/auth/new.ts']).length, 1);
+  assert.deepEqual(modulesForFiles(contract, ['src/other.ts']), []);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;\n');
+  const scoped = await specContext(root, contract, 'auth');
+  assert.equal(scoped.sections[0]?.content, '## Login\nCredentials\n');
+  assert.match(scoped.diff, /\+export const login = 2/);
+  const preview = await impact(root, contract, ['src/auth/*.ts', 'src/auth/future.ts']);
+  assert.ok(preview.files.includes('src/auth/future.ts'));
+  assert.deepEqual(preview.modules[0]?.tests[0]?.preconditions, moduleFixture.tests[0]!.preconditions);
+  await unlink(path.join(root, 'src/auth/login.ts'));
+  assert.equal((await impact(root, contract, ['src/auth/**'])).modules[0]?.id, 'auth');
+  await assert.rejects(readSpecSlice(root, '../secret.md'));
+  await assert.rejects(readSpecSlice(root, 'docs/missing.md'));
+});
+
+test('case mutations are locked, globally validated, prose preserving and never remove the final test', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = new MarkdownContractStore(root);
+  await store.initialize(contractFixture());
+  await writeFile(store.file, 'Keep before\n' + await store.readMarkdown() + '\nKeep after');
+  await store.upsertCase('auth', { ...moduleFixture.tests[0]!, id: 'AUTH-002' });
+  await store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Updated title' });
+  assert.equal((await store.read()).modules[0]!.tests.length, 2);
+  await store.removeCase('auth', 'AUTH-002');
+  await store.removeCase('auth', 'missing');
+  await assert.rejects(store.removeCase('auth', 'AUTH-001'));
+  await assert.rejects(store.upsertCase('missing', moduleFixture.tests[0]!), /Unknown module/);
+  await store.upsert({ ...moduleFixture, id: 'second', tests: [{ ...moduleFixture.tests[0]!, id: 'SECOND-001' }] });
+  await assert.rejects(store.upsertCase('second', moduleFixture.tests[0]!), /globally unique/);
+  const before = await store.readMarkdown();
+  await writeFile(store.file + '.lock', 'busy');
+  await assert.rejects(store.upsertCase('auth', moduleFixture.tests[0]!), /locked/);
+  assert.equal(await store.readMarkdown(), before);
+  assert.match(before, /^Keep before/);
+  assert.match(before, /Keep after$/);
+  await unlink(store.file + '.lock');
+});
+
+test('semantic filtering ignores cosmetics and local renames but keeps observable changes', () => {
+  const before = 'export function login(x: number) { const result = x + 1; return result; }';
+  assert.equal(isCosmeticChange('auth.ts', before, '// comment\nexport function login(x: number) {\n const renamed = x + 1;\nreturn renamed;\n}'), true);
+  assert.equal(isCosmeticChange('auth.ts', 'type ID = string; const x: ID = "a";', 'type ID = number; const x = "a";'), true);
+  for (const after of [before.replace('+ 1', '+ 2'), before.replace('login(', 'logout('), before.replace('login(x:', 'login(y:'), before.replace('number', 'string')]) {
+    assert.equal(isCosmeticChange('auth.ts', before, after), false);
+  }
+  assert.equal(isCosmeticChange('auth.ts', 'function f() { const a = 1; return { a }; }', 'function f() { const b = 1; return { b }; }'), false);
+  assert.equal(isCosmeticChange('auth.ts', 'export const x = /a b/;', 'export const x = /ab/;'), false);
+  assert.equal(isCosmeticChange('auth.ts', before, undefined), false);
+  assert.equal(isCosmeticChange('auth.py', 'x = 1', 'x=1'), false);
+  assert.equal(isCosmeticChange('auth.ts', 'const = ;', 'const = ;'), false);
+  assert.equal(isCosmeticChange('auth.tsx', 'const c = <p>hello world</p>;', 'const c = <p>helloworld</p>;'), false);
+  assert.equal(isCosmeticChange('auth.tsx', 'interface Props { enabled: boolean } export function Panel(p: Props) { return <p/>; }', 'interface Props { enabled: string } export function Panel(p: Props) { return <p/>; }'), false);
+  assert.equal(isCosmeticChange('auth.ts', 'function f() { const a = () => 1; return a.name; }', 'function f() { const b = () => 1; return b.name; }'), false);
+});
+
+test('section-scoped diffs omit distant unrelated hunks and include newly added files', async (t) => {
+  const before = '# One\nold\n# Two\n' + 'unrelated\n'.repeat(20);
+  const diff = '--- a/spec.md\n+++ b/spec.md\n@@ -2 +2 @@\n-old\n+new\n@@ -20 +20 @@\n-unrelated\n+secret\n';
+  const scoped = scopedSpecDiff(diff, 'spec.md#one', before, before.replace('old', 'new'));
+  assert.match(scoped, /\+new/);
+  assert.doesNotMatch(scoped, /secret/);
+  const { context, root } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/new.ts'), 'export const added = true;\n');
+  assert.match(await context.git.diffForPaths!(['src/auth/**']), /\+export const added = true/);
+});
+
+test('nullable provider pointers normalize without allowing invalid contract fields', async () => {
+  const author = new ValidatedModuleAuthor({ generate: async () => ({ ...moduleFixture, docs: null, specs: null, tests: [{ ...moduleFixture.tests[0]!, refs: null }] }) });
+  assert.deepEqual(await author.author({ context: 'spec' }), moduleFixture);
+  await assert.rejects(new ValidatedModuleAuthor({ generate: async () => ({ ...moduleFixture, name: null }) }).author({ context: 'spec' }));
+});
+
+test('review snapshot rejects concurrent changes instead of overwriting another case edit', async (t) => {
+  const { context, root, base } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'new.ts'), 'export const next = 1;');
+  const report = await context.analyzer.analyze({ base });
+  const choices = ['map', 'auth'];
+  await assert.rejects(resolveDrift(context, report, {}, { choose: async () => choices.shift(), confirm: async () => {
+    await context.store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Concurrent update' });
+    return true;
+  } }), /changed during review/);
+  assert.equal((await context.store.read()).modules[0]!.tests[0]!.title, 'Concurrent update');
+  assert.deepEqual((await context.store.read()).modules[0]!.paths, moduleFixture.paths);
+});
+
+test('semantic sync keeps the changed file inventory and skips only cosmetic stale modules', async (t) => {
+  const { root, context, base } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/login.ts'), '// note\nexport const login=1;\n');
+  assert.equal((await context.analyzer.analyze({ base })).blocked, true);
+  const report = await context.analyzer.analyze({ base, semantic: true });
+  assert.equal(report.blocked, false);
+  assert.ok(report.changedFiles.includes('src/auth/login.ts'));
+});
+
+test('spec drift compares linked sections, warns by default and blocks under strict policy', async (t) => {
+  const { root, context, git } = await repositoryFixture(t);
+  await mkdir(path.join(root, 'docs'));
+  await writeFile(path.join(root, 'docs/spec.md'), '# Spec\n## Login\nOriginal\n## Other\nOriginal\n');
+  await context.store.upsert({ ...moduleFixture, specs: ['docs/spec.md#login'] });
+  await git.add('.'); await git.commit('Add spec');
+  const base = (await git.revparse(['HEAD'])).trim();
+  await writeFile(path.join(root, 'docs/spec.md'), '# Spec\n## Login\nOriginal\n## Other\nChanged\n');
+  assert.deepEqual((await context.analyzer.analyze({ base })).issues, []);
+  await writeFile(path.join(root, 'docs/spec.md'), '# Spec\n## Login\nChanged\n## Other\nOriginal\n');
+  const warn = await context.analyzer.analyze({ base });
+  assert.equal(warn.issues[0]?.kind, 'stale-spec');
+  assert.equal(warn.blocked, false);
+  assert.equal((await context.analyzer.analyze({ base, strict: true })).blocked, true);
+  await context.store.upsert({ ...moduleFixture, specs: ['docs/spec.md#login'], tests: [{ ...moduleFixture.tests[0]!, title: 'New acceptance criteria' }] });
+  assert.deepEqual((await context.analyzer.analyze({ base })).issues, []);
+});
+
+test('bypass requires justification on every affected commit and never clears unmapped/spec issues', () => {
+  const issues = [{ kind: 'stale-module' as const, moduleId: 'auth', files: ['auth.ts'], message: 'stale' }];
+  const commits = [{ sha: 'one', files: ['auth.ts'], message: 'Refactor\n\nTestweave-Bypass: auth (internal rename)' }];
+  assert.equal(auditedBypasses(issues, commits).issues.length, 0);
+  assert.equal(auditedBypasses(issues, commits).bypasses[0]?.reason, 'internal rename');
+  assert.equal(auditedBypasses(issues, [...commits, { sha: 'two', files: ['auth.ts'], message: 'Change behavior' }]).issues.length, 1);
+  assert.equal(auditedBypasses([{ ...issues[0]!, kind: 'stale-spec' }], commits).issues.length, 1);
+  assert.equal(auditedBypasses([{ ...issues[0]!, kind: 'unmapped' }], commits).issues.length, 1);
+  assert.equal(bypassReason('Testweave-Bypass: auth ()', 'auth'), undefined);
+  assert.equal(bypassReason('@testweave-skip auth (rename only)', 'auth'), 'rename only');
+  assert.equal(bypassReason('Testweave-Bypass: auth (rename only)', 'other'), undefined);
+});
+
+test('established spec policy can ignore drift and baseline block cannot be weakened', async (t) => {
+  const { root, context, git } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'spec.md'), '# Spec\nOriginal\n');
+  const contract = await context.store.read();
+  contract.policy.mode = 'warn';
+  contract.policy.docDriftMode = 'block';
+  contract.modules[0]!.specs = ['spec.md#spec'];
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await git.add('.'); await git.commit('Enforce specs');
+  const base = (await git.revparse(['HEAD'])).trim();
+  contract.policy.docDriftMode = 'ignore';
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await writeFile(path.join(root, 'spec.md'), '# Spec\nChanged\n');
+  assert.equal((await context.analyzer.analyze({ base })).blocked, true);
+  await git.add('.'); await git.commit('Establish ignore policy');
+  const ignoredBase = (await git.revparse(['HEAD'])).trim();
+  await writeFile(path.join(root, 'spec.md'), '# Spec\nAnother change\n');
+  assert.deepEqual((await context.analyzer.analyze({ base: ignoredBase })).issues, []);
+});
+
+test('pre-push audits committed bypasses without writing the contract or trusting the dirty tree', async (t) => {
+  const { context, root, git, base } = await repositoryFixture(t);
+  const original = await context.store.readMarkdown();
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;');
+  await git.add('.'); await git.commit('Refactor\n\nTestweave-Bypass: auth (pure internal refactor)');
+  const target = (await git.revparse(['HEAD'])).trim();
+  assert.equal((await context.analyzer.analyze({ base, target })).blocked, true);
+  const report = await context.analyzer.analyze({ base, target, prePush: true });
+  assert.equal(report.blocked, false);
+  assert.equal(report.bypasses?.[0]?.commit, target);
+  assert.equal(await context.store.readMarkdown(), original);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 3;');
+  await git.add('.'); await git.commit('Behavior without bypass');
+  const next = (await git.revparse(['HEAD'])).trim();
+  assert.equal((await context.analyzer.analyze({ base, target: next, prePush: true })).blocked, true);
+});
+
+test('doctor reports dead globs, orphaned modules and missing anchors without repairing definitions', async (t) => {
+  const { context, root } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'spec.md'), '# Exists\n');
+  await context.store.upsert({ ...moduleFixture, paths: ['missing/**'], specs: ['spec.md#gone', 'missing.md'] });
+  const before = await context.store.readMarkdown();
+  const checks = await diagnose(context);
+  for (const prefix of ['dead-path:', 'orphaned-module:', 'dead-spec:']) assert.ok(checks.some((check) => check.id.startsWith(prefix) && !check.ok && !check.repairable));
+  assert.equal(await context.store.readMarkdown(), before);
+});
+
+test('compatible provider validates completion, schema and stable IDs using an injected SDK transport', async () => {
+  const client = new OpenAI({ apiKey: 'local', baseURL: 'http://localhost:11434/v1', maxRetries: 0,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      assert.equal(new URL(request.url).pathname, '/v1/chat/completions');
+      const body = await request.json() as { response_format: { type: string } };
+      assert.equal(body.response_format.type, 'json_schema');
+      return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(moduleFixture) } }] });
+    },
+  });
+  assert.deepEqual(await new ValidatedModuleAuthor(new CompatibleGenerator(client, 'local-model')).author({ context: 'Draft', existing: moduleFixture, compact: true }), moduleFixture);
+  const truncated = new OpenAI({ apiKey: 'local', maxRetries: 0, fetch: async () => Response.json({ choices: [{ finish_reason: 'length', message: { content: '{}' } }] }) });
+  await assert.rejects(new CompatibleGenerator(truncated, 'model').generate('system', 'input'), /complete structured/);
+  await assert.rejects(createModuleAuthor('custom', 'model', {}), /base-url/);
+  await assert.rejects(createModuleAuthor('gemini', 'model', {}), /GEMINI_API_KEY/);
+  await assert.rejects(createModuleAuthor('custom', 'model', {}, 'file:///tmp/api'), /HTTP/);
+  assert.ok(await createModuleAuthor('ollama', 'model', {}));
+  assert.ok(await createModuleAuthor('gemini', 'model', { GEMINI_API_KEY: 'test' }));
+});
+
+test('scoped MCP tools and compact case edits work through the actual protocol', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const server = createMcpServer({ ...context, compact: true });
+  const client = new Client({ name: 'v070', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(b); await client.connect(a);
+  for (const [name, args] of [
+    ['get_contract_index', {}], ['get_modules_for_files', { paths: ['src/auth/login.ts'] }],
+    ['get_module_by_path', { path: 'src/auth/login.ts' }], ['get_spec_slice', { pathOrModuleId: 'auth' }], ['impact', { paths: ['src/auth/*.ts'] }],
+    ['upsert_test_case', { moduleId: 'auth', testCase: { ...moduleFixture.tests[0]!, id: 'AUTH-002' } }],
+    ['remove_test_case', { moduleId: 'auth', testId: 'AUTH-002' }],
+  ] as const) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, name + ': ' + JSON.stringify(result));
+    assert.doesNotMatch((result.content as { text: string }[])[0]!.text, /\n/);
+  }
+  const invalid = await client.callTool({ name: 'remove_test_case', arguments: { moduleId: 'auth', testId: 'AUTH-001' } });
+  assert.equal(invalid.isError, true);
+});
+
+test('interactive resolver preserves cancellation, previews drafts, maps files and checks concurrency', async (t) => {
+  const { context, root, base } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'new.ts'), 'export const next = 1;');
+  const report = await context.analyzer.analyze({ base });
+  const original = await context.store.readMarkdown();
+  const cancel: ResolverUI = { choose: async () => undefined, confirm: async () => false };
+  await resolveDrift(context, report, {}, cancel);
+  assert.equal(await context.store.readMarkdown(), original);
+  const choices = ['map', 'auth'];
+  await resolveDrift(context, report, {}, { choose: async () => choices.shift(), confirm: async () => true });
+  assert.ok((await context.store.read()).modules[0]!.paths.includes('new.ts'));
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;');
+  const stale = await context.analyzer.analyze({ base });
+  await resolveDrift(context, stale, {}, { choose: async () => 'scan', confirm: async () => true });
+  assert.ok((await context.store.read()).modules[0]!.tests.some((entry) => entry.tags.includes('needs-review')));
+  assert.equal((await context.analyzer.analyze({ base })).blocked, false);
+  await assert.rejects(runSync(context, { interactive: true, prePush: true }), /TTY/);
+});
+````
+
 ````scripts/bundle-source.mjs
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -4618,7 +5534,7 @@ try {
   const client = new Client({ name: 'package-manager-check', version: '1.0.0' });
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
   } finally { await client.close(); }
   await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   await mkdir(path.join(root, 'src'));

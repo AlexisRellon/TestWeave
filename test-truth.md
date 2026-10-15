@@ -122,6 +122,61 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             "cli",
             "update"
           ]
+        },
+        {
+          "id": "CLI-005",
+          "title": "Preview impact and resolve drift interactively",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Preview existing globs and a not-yet-created path",
+              "data": "testweave impact 'src/auth/**' src/auth/new.ts --json",
+              "expected": "Only mapped modules, linked spec sections, test IDs/titles and preconditions are returned; no source or contract changes occur. Unknown paths return no matches and escaping paths fail."
+            },
+            {
+              "action": "Run interactive sync and choose mapping, local scanning, cancellation and AI drafting",
+              "data": "testweave sync --base HEAD --interactive; optional explicit --provider and --model",
+              "expected": "TTY prompts preview each change and require acceptance. Mapping preserves tests; scan creates needs-review scenarios from local evidence. AI shows scoped context before sending. Concurrent changes reject stale writes. Drift is checked again; drafts claim no execution."
+            },
+            {
+              "action": "Attempt interactive mode in automation or pre-push",
+              "data": "--interactive --json; --interactive --pre-push; non-TTY stdin",
+              "expected": "Command rejects incompatible modes before mutation. Provider options require interactive mode and AI drafting requires an explicit provider/model."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "CLI-006",
+          "title": "Generate scoped drafts with local and hosted providers",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Request a compact draft using a module or document heading",
+              "data": "generate --provider ollama --model local-model --module authentication --compact; custom --base-url; gemini",
+              "expected": "Only selected module context, linked heading slices and uncommitted hunks are sent; output validates and does not change the contract. Ollama requires no key, custom requires a base URL, Gemini requires GEMINI_API_KEY."
+            },
+            {
+              "action": "Provide a missing anchor, invalid endpoint, incomplete response or duplicate IDs",
+              "data": "missing.md#heading; file:///endpoint; truncated provider response",
+              "expected": "Invalid context and configuration fail clearly; malformed, incomplete or identity-changing drafts are rejected before output/adoption. Existing output files are never overwritten."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
         }
       ]
     },
@@ -203,7 +258,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           "title": "Built-in and custom MCP configuration preserves settings and supports repair",
           "type": "integration",
           "priority": "high",
-          "preconditions": ["Project with selected verified MCP integrations listed in docs/mcp-providers.md"],
+          "preconditions": [
+            "Project with selected verified MCP integrations listed in docs/mcp-providers.md"
+          ],
           "steps": [
             {
               "action": "Run setup twice with existing servers, comments and trailing commas, then connect using the generated entry",
@@ -233,7 +290,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Export generic JSON and Codex TOML launch entries; register in Codex and connect using the configured launch",
               "data": "testweave mcp config; testweave mcp config --format toml; codex mcp add testweave -- <command> <args>; codex mcp get testweave",
-              "expected": "Outputs absolute runtime and CLI paths with project --cwd, Codex reads the registered entry, and its launch responds with three tools and the living contract resource; unsupported output formats fail"
+              "expected": "Outputs absolute runtime and CLI paths with project --cwd, Codex reads the registered entry, and its launch responds with ten tools and the living contract resource; unsupported output formats fail"
             },
             {
               "action": "Install and export with --provider for JSON, command-array and TOML clients; repeat installation and run doctor repair after removing entries",
@@ -246,14 +303,21 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "expected": "Updates existing JSONC alternatives instead of creating competing configuration; TOML preserves unrelated settings, quoted table names, multiline values and comments; malformed TOML, wrong map/array shapes, duplicate TestWeave array entries and unsupported inline declarations fail without changing files; universal skills alone do not register individual MCP clients"
             }
           ],
-          "tags": ["mcp", "setup", "repair", "preservation"]
+          "tags": [
+            "mcp",
+            "setup",
+            "repair",
+            "preservation"
+          ]
         },
         {
           "id": "INT-004",
           "title": "Shell, global npm and Homebrew installations share project setup",
           "type": "system",
           "priority": "high",
-          "preconditions": ["Node.js 20+ with npm, or Homebrew for the brew method"],
+          "preconditions": [
+            "Node.js 20+ with npm, or Homebrew for the brew method"
+          ],
           "steps": [
             {
               "action": "Install with the shell installer using npm and brew, selecting a project path containing spaces",
@@ -271,7 +335,37 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "expected": "Install-only mode skips project mutation; invalid arguments and missing paths fail before installation; installation failures prevent setup"
             }
           ],
-          "tags": ["install", "shell", "npm-global", "homebrew"]
+          "tags": [
+            "install",
+            "shell",
+            "npm-global",
+            "homebrew"
+          ]
+        },
+        {
+          "id": "INT-006",
+          "title": "Compact skill routing and expanded MCP installation remain usable",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Refresh a disposable agent installation and follow its focused guide links",
+              "data": "testweave update --yes; SKILL.md; commands/index.md",
+              "expected": "Compact skill/rule entrypoints direct agents to scoped context and case-level edits; all 11 bundled Markdown documents install and local links resolve. User prose and unrelated files remain intact."
+            },
+            {
+              "action": "Connect through an installed MCP entry with compact mode enabled",
+              "data": "mcp --compact; listTools; get_contract_index",
+              "expected": "Ten tools and the Markdown resource are available. JSON responses omit only restorable defaults; errors remain readable and stdio contains only protocol messages."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
         }
       ]
     },
@@ -353,10 +447,129 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             "functional-testing",
             "taxonomy"
           ]
+        },
+        {
+          "id": "ENG-004",
+          "title": "Scoped contract and spec reads preserve context boundaries",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Read the index, modules for edited paths and anchored specs",
+              "data": "get_contract_index; get_modules_for_files; get_module_by_path; get_spec_slice",
+              "expected": "Index omits steps, matched reads exclude unrelated modules, headings include child sections and distinguish duplicates. Code-fenced headings are ignored. Uncommitted diffs contain relevant hunks and existing test headers."
+            },
+            {
+              "action": "Request a missing heading, traversal path or out-of-workspace link",
+              "data": "docs/spec.md#missing; ../private.md; external symlink",
+              "expected": "Reads fail clearly without exposing outside content; no contract write occurs. Non-Git workspaces still support spec slices and impact."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-005",
+          "title": "Atomic case edits and compact schema defaults",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Upsert one existing/new case and remove an absent/present case",
+              "data": "upsert_test_case(moduleId,testCase); remove_test_case(moduleId,testId)",
+              "expected": "Only the named case changes. Full-contract validation and test-truth.md.lock protect globally unique IDs, sibling tests and surrounding Markdown. Removing an absent case is idempotent."
+            },
+            {
+              "action": "Attempt final-case deletion, duplicate IDs, unknown module and an existing lock",
+              "data": "Last test; duplicate ID across modules; missing module; test-truth.md.lock",
+              "expected": "All invalid changes fail without partial writes. Empty tags/preconditions and regression types restore after compact serialization. Optional docs/specs/refs retain schemaVersion 1 compatibility."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-006",
+          "title": "Semantic and spec drift retain behavior-relevant changes",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Compare formatting, comments, local renames, exported signatures, routes and runtime expressions",
+              "data": "sync --base HEAD --semantic",
+              "expected": "Cosmetic JS/TS edits do not trigger stale-module; changed file inventory remains complete. Public signature, route, props and runtime changes retain drift. Unsupported languages, invalid syntax, added/deleted files and reflective code are conservative."
+            },
+            {
+              "action": "Edit a linked heading, an unrelated heading, or delete a spec anchor",
+              "data": "docs/spec.md#login; policy.docDriftMode warn/block/ignore",
+              "expected": "Only affected linked sections trigger stale-spec without a test update. Default warning does not block; block/strict enforce. Current policy cannot weaken baseline enforcement. Doctor identifies dead specs without deleting authored definitions."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-007",
+          "title": "Pre-push refactor bypasses are module-scoped and auditable",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Push a range where every source-changing commit has a justified module marker",
+              "data": "Testweave-Bypass: authentication (pure internal refactor); @testweave-skip authentication (reason)",
+              "expected": "Only stale-module for that module clears. Reports retain commit SHA, module ID and reason. Contract bytes remain unchanged; dirty working definitions cannot change the committed verdict."
+            },
+            {
+              "action": "Omit a reason or marker on one affected commit, use another module, or leave spec/unmapped drift",
+              "data": "Multiple commits; empty reason; unrelated marker; first-push empty baseline",
+              "expected": "Drift remains. Ordinary sync ignores markers; first pushes from an empty-tree baseline do not use bypasses."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-008",
+          "title": "Doctor distinguishes dead paths and orphaned modules",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "A disposable initialized Git workspace with a committed QA contract and a known baseline revision."
+          ],
+          "steps": [
+            {
+              "action": "Delete matching source files and linked documents or headings, then diagnose",
+              "data": "doctor --json; doctor --fix",
+              "expected": "Each zero-match path is identified; modules with no live paths are orphaned. Missing spec files and anchors are reported. These findings require manual review; --fix preserves contract definitions."
+            }
+          ],
+          "tags": [
+            "v0.7.0",
+            "regression"
+          ]
         }
       ]
     }
-
   ]
 }
 ~~~

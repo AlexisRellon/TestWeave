@@ -34,7 +34,7 @@ test('doctor renders aligned plain diagnostics and an accurate healthy summary',
   assert.match(human.stdout, /Workspace\s+/);
   assert.ok(human.stdout.includes(path.basename(root)));
   assert.match(human.stdout, /Node\.js runtime\s+v\d+/);
-  assert.match(human.stdout, /Skill bundle\s+10 documents/);
+  assert.match(human.stdout, /Skill bundle\s+11 documents/);
   assert.match(human.stdout, /QA contract\s+OK\s+.*test-truth\.md/);
   assert.match(human.stdout, /Claude Code\s+OK\s+.*CLAUDE\.md.*\.mcp\.json.*\.claude\/skills\/testweave/);
   assert.match(human.stdout, /Pre-push hook\s+disabled in project configuration/);

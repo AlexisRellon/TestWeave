@@ -69,7 +69,7 @@ test('skill bundle installs authoritative documents with resolvable local links'
   assert.equal(await readFile(installedFile, 'utf8'), TESTWEAVE_SKILL_CONTENT);
   assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
   assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
-    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/init.md', 'commands/mcp.md',
+    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/index.md', 'commands/init.md', 'commands/mcp.md',
     'commands/scan.md', 'commands/sync.md', 'commands/update.md',
     'references/contract-schema.md', 'references/functional-testing.md',
   ]);

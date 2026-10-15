@@ -10,6 +10,8 @@
 - `policy.sourceGlobs`: 1–100 positive workspace-relative POSIX globs covering behavior-bearing files.
 - `policy.ignoreGlobs`: up to 100 exclusion globs.
 - `modules`: up to 10,000 modules; an initial baseline may be empty.
+- Optional `docs`: up to 100 permanent workspace-relative document pointers, optionally with `#heading-slug`.
+- Optional `policy.docDriftMode`: `warn` (default), `block`, or `ignore`; independent of source drift policy.
 
 Paths cannot be absolute, negated, contain backslashes, colons, parent traversal, newlines or nulls. Use forward slashes on Windows. Put exclusions in policy rather than negating module paths. Each pattern is 1–500 characters.
 
@@ -17,7 +19,9 @@ Paths cannot be absolute, negated, contain backslashes, colons, parent traversal
 
 A module requires `id`, `name`, `description`, `paths` and `tests`. Module IDs are unique. A module has 1–100 paths and 1–1,000 tests.
 
-A test requires `id`, `title`, `priority`, `preconditions`, `steps` and `tags`. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
+Optional module `docs` and `specs` contain up to 100 document pointers each. These are separate from source `paths`. Do not duplicate spec prose or link ephemeral `docs/superpowers/plans/` files. Anchors use lowercase heading text, punctuation removal and hyphens; duplicates get `-1`, `-2`. Doctor flags missing documents/anchors. Optional test `refs` contains up to 100 issue IDs or document references.
+
+A test requires `id`, `title`, `priority` and `steps`. Omitted `preconditions` and `tags` default to empty arrays for compact wire mode. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
 
 - `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component or e2e. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
 - `priority`: low, medium, high or critical.

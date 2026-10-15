@@ -99,7 +99,7 @@ try {
   const client = new Client({ name: 'package-manager-check', version: '1.0.0' });
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 10);
   } finally { await client.close(); }
   await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   await mkdir(path.join(root, 'src'));
