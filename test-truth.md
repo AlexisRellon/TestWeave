@@ -146,6 +146,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Attempt interactive mode in automation or pre-push",
               "data": "--interactive --json; --interactive --pre-push; non-TTY stdin",
               "expected": "Command rejects incompatible modes before mutation. Provider options require interactive mode and AI drafting requires an explicit provider/model."
+            },
+            {
+              "action": "Run interactive sync after a committed behavior change and inspect the provider preview",
+              "data": "testweave sync --base <baseline> --interactive with explicit provider and model",
+              "expected": "The provider preview contains the committed changed implementation, compared against the report baseline rather than HEAD."
             }
           ],
           "tags": [
@@ -226,6 +231,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Inspect 79 agents catalog and install or update custom skill across targets",
               "data": "ALL_AGENTS, installSkill, hasSkill, testweave update",
               "expected": "Validates 23 universal agents and 56 dedicated agents. Installs and refreshes the complete authoritative skills/testweave bundle: SKILL.md, commands/*.md and references/*.md, with working relative links and no duplicate documentation strings in the installer. Missing or changed managed files fail skill diagnostics; refresh preserves unrelated user files. The generated implementation bundle includes all authoritative skill Markdown alongside source, so its runtime resources remain available. A nested resource directory linked outside the workspace is rejected before bundle writes."
+            },
+            {
+              "action": "Run the review regression suite for v0.7.1 spec, semantic, impact and doctor fixes",
+              "data": "npx tsx --test tests/review-regressions.test.ts",
+              "expected": "All review regression tests pass; each fails when its fix is reverted."
             }
           ],
           "tags": [
@@ -466,6 +476,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Request a missing heading, traversal path or out-of-workspace link",
               "data": "docs/spec.md#missing; ../private.md; external symlink",
               "expected": "Reads fail clearly without exposing outside content; no contract write occurs. Non-Git workspaces still support spec slices and impact."
+            },
+            {
+              "action": "Draft context for a spec whose filename contains glob characters, and for a brace glob source path",
+              "data": "docs/[id].md#login with a changed sibling docs/i.md; src/**/*.{ts,tsx}",
+              "expected": "The bracket spec diff is returned and the sibling file is excluded. The brace glob returns the changed tracked source file."
             }
           ],
           "tags": [
@@ -516,6 +531,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Edit a linked heading, an unrelated heading, or delete a spec anchor",
               "data": "docs/spec.md#login; policy.docDriftMode warn/block/ignore",
               "expected": "Only affected linked sections trigger stale-spec without a test update. Default warning does not block; block/strict enforce. Current policy cannot weaken baseline enforcement. Doctor identifies dead specs without deleting authored definitions."
+            },
+            {
+              "action": "Change let/const/var kind, a separately exported function signature, and a spec section both before and after a committed change",
+              "data": "let x = 1 to const x = 1; export { f } with f(x: number) to f(x: string); spec section edited beside an unrelated section",
+              "expected": "Declaration kind and exported signature changes keep drift. Spec drift is limited to the selected section in both revisions. Deleting a module with a linked spec change is blocked under docDriftMode block."
             }
           ],
           "tags": [
@@ -561,6 +581,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Delete matching source files and linked documents or headings, then diagnose",
               "data": "doctor --json; doctor --fix",
               "expected": "Each zero-match path is identified; modules with no live paths are orphaned. Missing spec files and anchors are reported. These findings require manual review; --fix preserves contract definitions."
+            },
+            {
+              "action": "Run doctor for a registered path under an excluded folder such as dist/ in a Git workspace",
+              "data": "module paths dist/*.js with a tracked dist/a.js",
+              "expected": "The path is reported live, not dead. Non-Git excluded-folder behavior remains a documented limitation."
             }
           ],
           "tags": [

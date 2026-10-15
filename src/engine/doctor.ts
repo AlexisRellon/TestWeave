@@ -20,7 +20,7 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   try {
     const contract = await deps.store.read();
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
-    const listed = await listFiles(deps.root);
+    const listed = await listFiles(deps.root, { includeExcluded: true });
     const files: string[] = [];
     for (const file of listed) {
       try { if ((await stat(await workspacePath(deps.root, file))).isFile()) files.push(file); }

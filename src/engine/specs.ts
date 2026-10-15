@@ -12,8 +12,13 @@ export function specPointers(contract: TestTruth, module?: TestModule): string[]
 }
 export function sliceMarkdown(markdown: string, pointer: string): string {
   specPointerSchema.parse(pointer);
+  if (!pointer.split('#')[1]) return markdown;
+  const [start, end] = sectionBounds(markdown, pointer);
+  return markdown.slice(start, end);
+}
+export function sectionBounds(markdown: string, pointer: string): [number, number] {
   const anchor = pointer.split('#')[1];
-  if (!anchor) return markdown;
+  if (!anchor) return [0, markdown.length];
   const tree = unified().use(remarkParse).parse(markdown);
   const nodes = tree.children as MarkdownNode[];
   const used = new Set<string>();
@@ -25,7 +30,7 @@ export function sliceMarkdown(markdown: string, pointer: string): string {
     used.add(slug);
     if (slug !== anchor) continue;
     const next = nodes.slice(index + 1).find((entry) => entry.type === 'heading' && entry.depth! <= node.depth!);
-    return markdown.slice(node.position!.start.offset, next?.position?.start.offset ?? markdown.length);
+    return [node.position!.start.offset!, next?.position?.start.offset ?? markdown.length];
   }
   throw new Error(`Missing heading: ${pointer}`);
 }

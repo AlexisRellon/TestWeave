@@ -80,10 +80,10 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
     const docModes = [previous?.policy.docDriftMode ?? 'warn', current.policy.docDriftMode ?? 'warn'];
     const docMode = docModes.includes('block') ? 'block' : docModes.includes('warn') ? 'warn' : 'ignore';
     if (previous && docMode !== 'ignore') {
-      for (const module of current.modules) {
-        const before = previous.modules.find((entry) => entry.id === module.id);
-        if (!before || testContent(before) !== testContent(module)) continue;
-        const pointers = [...new Set([...specPointers(previous, before), ...specPointers(current, module)])];
+      for (const before of previous.modules) {
+        const module = current.modules.find((entry) => entry.id === before.id);
+        if (module && testContent(before) !== testContent(module)) continue;
+        const pointers = [...new Set([...specPointers(previous, before), ...(module ? specPointers(current, module) : [])])];
         const stale: string[] = [];
         for (const pointer of pointers) {
           const file = specFile(pointer);
@@ -97,11 +97,11 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
           }
           stale.push(pointer);
         }
-        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: module.id, files: stale, message: 'Linked spec sections changed without a QA update' });
+        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: before.id, files: stale, message: 'Linked spec sections changed without a QA update' });
       }
     }
     let bypasses: BypassAudit[] = [];
-    if (options.prePush && target && this.git.commits && !options.emptyBase) {
+    if (options.prePush && target && this.git.commits && !options.emptyBase && issues.some((issue) => issue.kind === 'stale-module')) {
       ({ issues, bypasses } = auditedBypasses(issues, await this.git.commits(base, target)));
     }
     // A branch cannot silently weaken the policy that its upstream enforces.

@@ -16,7 +16,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.0')
+  const program = new Command().name('testweave').version('0.7.1')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();

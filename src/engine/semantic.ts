@@ -1,6 +1,12 @@
 import ts from 'typescript';
 
 /** Conservative JS/TS comparison: uncertain syntax and reflective code retain drift. */
+function declaredName(statement: ts.Statement): string[] {
+  if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.flatMap((declaration) => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
+  if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) return statement.name ? [statement.name.text] : [];
+  return [];
+}
 function fingerprint(file: string, content: string): string | undefined {
   if (!/\.[cm]?[jt]sx?$/.test(file) || /\b(?:eval|with)\s*\(/.test(content)) return undefined;
   const options: ts.CompilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.Preserve, noLib: true, noResolve: true, allowJs: true };
@@ -34,8 +40,24 @@ function fingerprint(file: string, content: string): string | undefined {
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
     returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
   });
+  const exportedNames = new Set<string>();
   for (const statement of source.statements) {
-    if (!ts.canHaveModifiers(statement) || !ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) return undefined;
+      for (const element of statement.exportClause.elements) exportedNames.add((element.propertyName ?? element.name).text);
+    } else if (ts.isExportAssignment(statement)) {
+      if (!ts.isIdentifier(statement.expression)) return undefined;
+      exportedNames.add(statement.expression.text);
+    }
+  }
+  const declaredNames = new Set(source.statements.flatMap(declaredName));
+  if ([...exportedNames].some((name) => !declaredNames.has(name))) return undefined;
+  for (const statement of source.statements) {
+    const exported = (ts.canHaveModifiers(statement) && !!ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) ||
+      declaredName(statement).some((name) => exportedNames.has(name));
+    if (!exported) continue;
+    if (!(ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) || ts.isVariableStatement(statement))) return undefined;
     if (ts.isFunctionDeclaration(statement)) publicTypes.push(signature(statement));
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) publicTypes.push(printer.printNode(ts.EmitHint.Unspecified, statement, source));
     if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
@@ -44,6 +66,7 @@ function fingerprint(file: string, content: string): string | undefined {
       if (ts.isPropertyDeclaration(member)) publicTypes.push(typeText(member.type));
     }
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) return undefined;
       publicTypes.push(typeText(declaration.type));
       if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) publicTypes.push(signature(declaration.initializer));
     }
@@ -82,7 +105,7 @@ function fingerprint(file: string, content: string): string | undefined {
     function structure(node: ts.Node): unknown {
       const children: unknown[] = [];
       ts.forEachChild(node, (child) => { children.push(structure(child)); });
-      return [node.kind, children.length ? children : 'text' in node ? node.text : node.getText(parsed)];
+      return [node.kind, ts.isVariableDeclarationList(node) ? node.flags & ts.NodeFlags.BlockScoped : 0, children.length ? children : 'text' in node ? node.text : node.getText(parsed)];
     }
     return JSON.stringify([publicTypes, structure(parsed)]);
   } finally { transformed.dispose(); }

@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -642,7 +642,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.0')
+  const program = new Command().name('testweave').version('0.7.1')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -940,8 +940,9 @@ export async function resolveDrift(context: CliContext, report: DriftReport, opt
       }
     } else if (choice === 'ai') {
       if (!options.provider || !options.model) throw new Error('Interactive AI drafting requires explicit --provider and --model');
-      const source = existing ? await specContext(context.root, contract, existing.id)
-        : { diff: await context.git.diffForPaths?.(issue.files), files: issue.files };
+      const target = report.target === 'working-tree' ? undefined : report.target;
+      const source = existing ? await specContext(context.root, contract, existing.id, report.base, target)
+        : { diff: await context.git.diffForPaths?.(issue.files, report.base, target), files: issue.files };
       context.output.log(`Sending scoped diff/spec context to ${options.provider}: ${wireJson(source, true)}`);
       if (!await ui.confirm('Send this context to the selected provider?')) continue;
       const author = await createModuleAuthor(providerSchema.parse(options.provider), options.model, process.env, options.baseUrl);
@@ -1120,7 +1121,7 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   try {
     const contract = await deps.store.read();
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
-    const listed = await listFiles(deps.root);
+    const listed = await listFiles(deps.root, { includeExcluded: true });
     const files: string[] = [];
     for (const file of listed) {
       try { if ((await stat(await workspacePath(deps.root, file))).isFile()) files.push(file); }
@@ -1261,10 +1262,10 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
     const docModes = [previous?.policy.docDriftMode ?? 'warn', current.policy.docDriftMode ?? 'warn'];
     const docMode = docModes.includes('block') ? 'block' : docModes.includes('warn') ? 'warn' : 'ignore';
     if (previous && docMode !== 'ignore') {
-      for (const module of current.modules) {
-        const before = previous.modules.find((entry) => entry.id === module.id);
-        if (!before || testContent(before) !== testContent(module)) continue;
-        const pointers = [...new Set([...specPointers(previous, before), ...specPointers(current, module)])];
+      for (const before of previous.modules) {
+        const module = current.modules.find((entry) => entry.id === before.id);
+        if (module && testContent(before) !== testContent(module)) continue;
+        const pointers = [...new Set([...specPointers(previous, before), ...(module ? specPointers(current, module) : [])])];
         const stale: string[] = [];
         for (const pointer of pointers) {
           const file = specFile(pointer);
@@ -1278,11 +1279,11 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
           }
           stale.push(pointer);
         }
-        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: module.id, files: stale, message: 'Linked spec sections changed without a QA update' });
+        if (stale.length) issues.push({ kind: 'stale-spec', moduleId: before.id, files: stale, message: 'Linked spec sections changed without a QA update' });
       }
     }
     let bypasses: BypassAudit[] = [];
-    if (options.prePush && target && this.git.commits && !options.emptyBase) {
+    if (options.prePush && target && this.git.commits && !options.emptyBase && issues.some((issue) => issue.kind === 'stale-module')) {
       ({ issues, bypasses } = auditedBypasses(issues, await this.git.commits(base, target)));
     }
     // A branch cannot silently weaken the policy that its upstream enforces.
@@ -1369,7 +1370,7 @@ export interface GitRepository {
   hookPath(): Promise<string>;
   emptyTree(): Promise<string>;
   readFile?(file: string, ref?: string): Promise<string | undefined>;
-  diffForPaths?(paths: string[]): Promise<string>;
+  diffForPaths?(paths: string[], base?: string, target?: string): Promise<string>;
   commits?(base: string, target: string): Promise<CommitChange[]>;
 }
 export interface CommitChange { sha: string; message: string; files: string[] }
@@ -1407,13 +1408,19 @@ export class SimpleGitRepository implements GitRepository {
     try { return await readFile(await workspacePath(await this.root(), file), 'utf8'); }
     catch (error) { if (isMissing(error)) return undefined; throw error; }
   }
-  async diffForPaths(paths: string[]): Promise<string> {
+  async diffForPaths(paths: string[], base?: string, target?: string): Promise<string> {
     if (!paths.length) return '';
-    let base: string;
-    try { base = await this.resolve('HEAD'); } catch { base = await this.emptyTree(); }
-    let diff = await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', base, '--', ...paths]);
-    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+    let from: string;
+    if (base) {
+      if (!/^[a-f0-9]{40,64}$/.test(base)) throw new Error('Invalid Git reference');
+      from = base;
+    } else try { from = await this.resolve('HEAD'); } catch { from = await this.emptyTree(); }
     const matches = picomatch(paths, { dot: true });
+    const range = [from, ...(target ? [await this.resolve(target)] : [])];
+    const tracked = (await this.git.raw(['diff', '--name-only', '-z', '--no-renames', ...range, '--'])).split('\0').filter((entry) => entry && matches(entry));
+    let diff = tracked.length ? await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', ...range, '--', ...tracked.map((file) => `:(literal)${file}`)]) : '';
+    if (target) return diff;
+    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
     for (const file of untracked.filter((entry) => matches(entry))) {
       const content = await this.readFile(file);
       if (content === undefined || content.includes('\0')) continue;
@@ -1520,31 +1527,78 @@ export function replaceContractBlock(markdown: string, value: TestTruth): string
 ````src/engine/queries.ts
 import picomatch from 'picomatch';
 import { sourcePatternSchema, type TestTruth } from '../schema/test-truth.js';
-import { listFiles } from './scan.js';
+import { listFiles, literalGlob } from './scan.js';
 import { createGitRepository } from './git.js';
-import { readSpecSlice, specFile, specPointers, sliceMarkdown } from './specs.js';
+import { readSpecSlice, sectionBounds, specFile, specPointers } from './specs.js';
 
-/** Keep only hunks intersecting a referenced section in either revision. */
+/** Keep only diff lines inside a referenced section, on the revision each line belongs to. */
 export function scopedSpecDiff(diff: string, pointer: string, before: string | undefined, after: string): string {
   if (!pointer.includes('#')) return diff;
   const range = (markdown: string | undefined): [number, number] | undefined => {
     if (markdown === undefined) return undefined;
     try {
-      const section = sliceMarkdown(markdown, pointer);
-      const start = markdown.slice(0, markdown.indexOf(section)).split('\n').length;
-      return [start, start + section.replace(/\n$/, '').split('\n').length - 1];
+      const [start, end] = sectionBounds(markdown, pointer);
+      const text = markdown.slice(0, end);
+      return [markdown.slice(0, start).split('\n').length, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)];
     } catch { return undefined; }
   };
   const oldRange = range(before), newRange = range(after);
-  const parts = diff.split(/(?=^@@ )/m);
-  const header = parts.shift() ?? '';
-  const hunks = parts.filter((hunk) => {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk);
-    if (!match) return false;
-    const overlaps = (start: number, count: number, section: [number, number] | undefined) => section && start <= section[1] && start + Math.max(1, count) - 1 >= section[0];
-    return overlaps(Number(match[1]), Number(match[2] ?? 1), oldRange) || overlaps(Number(match[3]), Number(match[4] ?? 1), newRange);
-  });
-  return hunks.length ? header + hunks.join('') : '';
+  const within = (line: number, section: [number, number] | undefined) => !!section && line >= section[0] && line <= section[1];
+  const output: string[] = [];
+  for (const fileDiff of diff.split(/(?=^diff --git )/m)) {
+    const [header = '', ...hunks] = fileDiff.split(/(?=^@@ )/m);
+    const kept: string[] = [];
+    for (const hunk of hunks) {
+      const [head = '', ...body] = hunk.split('\n');
+      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(head);
+      if (!match) continue;
+      let oldLine = Number(match[1]), newLine = Number(match[2]);
+      let group: string[] = [], groupOld = 0, groupNew = 0, groupStart: [number, number] = [0, 0], previousKept = false;
+      const flush = () => {
+        if (group.length) kept.push(`@@ -${groupOld ? groupStart[0] : Math.max(0, groupStart[0] - 1)},${groupOld} +${groupNew ? groupStart[1] : Math.max(0, groupStart[1] - 1)},${groupNew} @@\n${group.join('\n')}\n`);
+        group = []; groupOld = 0; groupNew = 0;
+      };
+      for (const line of body) {
+        const marker = line[0];
+        if (!marker) continue;
+        if (!' +-\\'.includes(marker)) { flush(); continue; }
+        const isKept: boolean = marker === '\\' ? previousKept
+          : marker === '+' ? within(newLine, newRange)
+          : marker === '-' ? within(oldLine, oldRange)
+          : within(oldLine, oldRange) || within(newLine, newRange);
+        if (isKept) {
+          if (!group.length) groupStart = [oldLine, newLine];
+          group.push(line);
+          if (marker !== '+' && marker !== '\\') groupOld++;
+          if (marker !== '-' && marker !== '\\') groupNew++;
+        } else flush();
+        if (marker !== '\\') {
+          if (marker !== '+') oldLine++;
+          if (marker !== '-') newLine++;
+          previousKept = isKept;
+        }
+      }
+      flush();
+    }
+    if (kept.length) output.push(header + kept.join(''));
+  }
+  return output.join('');
+}
+
+function segmentsOverlap(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftGlob = picomatch.scan(left).isGlob, rightGlob = picomatch.scan(right).isGlob;
+  if (!leftGlob && !rightGlob) return false;
+  if (!leftGlob) return picomatch(right, { dot: true })(left);
+  if (!rightGlob) return picomatch(left, { dot: true })(right);
+  // shortcut: two wildcard segments are assumed to overlap, so impact over-reports rather than hides; upgrade with a real glob intersection library.
+  return true;
+}
+function globsOverlap(left: string[], right: string[]): boolean {
+  if (!left.length || !right.length) return [...left, ...right].every((segment) => segment === '**');
+  if (left[0] === '**') return globsOverlap(left.slice(1), right) || globsOverlap(left, right.slice(1));
+  if (right[0] === '**') return globsOverlap(left, right.slice(1)) || globsOverlap(left.slice(1), right);
+  return segmentsOverlap(left[0]!, right[0]!) && globsOverlap(left.slice(1), right.slice(1));
 }
 
 export function contractIndex(contract: TestTruth) {
@@ -1555,7 +1609,7 @@ export function modulesForFiles(contract: TestTruth, paths: string[]) {
   paths.forEach((file) => sourcePatternSchema.parse(file));
   return contract.modules.filter((module) => paths.some((file) => picomatch(module.paths, { dot: true })(file)));
 }
-export async function specContext(root: string, contract: TestTruth, pathOrModuleId: string) {
+export async function specContext(root: string, contract: TestTruth, pathOrModuleId: string, base?: string, target?: string) {
   const module = contract.modules.find((entry) => entry.id === pathOrModuleId);
   const pointers = module ? specPointers(contract, module) : [pathOrModuleId];
   const sections = await Promise.all(pointers.map(async (pointer) => ({ pointer, content: await readSpecSlice(root, pointer) })));
@@ -1563,13 +1617,15 @@ export async function specContext(root: string, contract: TestTruth, pathOrModul
   let diff = '';
   // Non-Git workspaces still support deterministic section reads.
   try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
-  diff = await git.diffForPaths!(module?.paths ?? []);
+  diff = await git.diffForPaths!(module?.paths ?? [], base, target);
+  const from = base ?? await git.resolve('HEAD');
+  const to = target ? await git.resolve(target) : undefined;
   for (const pointer of pointers) {
     const file = specFile(pointer);
     let before: string | undefined;
-    try { before = await git.readFile!(file, await git.resolve('HEAD')); } catch { /* New repository/document. */ }
-    const after = await git.readFile!(file) ?? '';
-    diff += scopedSpecDiff(await git.diffForPaths!([file]), pointer, before, after);
+    try { before = await git.readFile!(file, from); } catch { /* New repository/document. */ }
+    const after = to ? await git.readFile!(file, to) ?? '' : await git.readFile!(file) ?? '';
+    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], base, target), pointer, before, after);
   }
   return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
 }
@@ -1582,11 +1638,8 @@ export async function impact(root: string, contract: TestTruth, paths: string[])
   const mapped = new Set(modulesForFiles(contract, selected).map((module) => module.id));
   const modules = contract.modules.filter((module) => {
     if (mapped.has(module.id)) return true;
-    return module.paths.some((pattern) => paths.some((query) => {
-      if (query === pattern) return true;
-      return picomatch.scan(query).isGlob &&
-        (picomatch(query, { dot: true })(pattern) || picomatch(pattern, { dot: true })(query));
-    }));
+    return module.paths.some((pattern) => paths.some((query) => query === pattern ||
+      ((picomatch.scan(query).isGlob || picomatch.scan(pattern).isGlob) && globsOverlap(query.split('/'), pattern.split('/')))));
   });
   return { paths, files: selected, modules: await Promise.all(modules.map(async (module) => ({
     id: module.id, paths: module.paths,
@@ -1627,11 +1680,11 @@ function excludedPath(file: string): boolean {
   return file.split('/').some((part) => excluded.has(part)) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|\.d\.ts$/.test(file);
 }
 
-export async function listFiles(root: string): Promise<string[]> {
+export async function listFiles(root: string, options: { includeExcluded?: boolean } = {}): Promise<string[]> {
   const git = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
   if (await git.checkIsRepo()) {
     const listed = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
-    return [...new Set(listed.split('\0').filter((file) => file && !excludedPath(file)))].sort();
+    return [...new Set(listed.split('\0').filter((file) => file && !(!options.includeExcluded && excludedPath(file))))].sort();
   }
   const files: string[] = [];
   async function walk(directory: string): Promise<void> {
@@ -1805,6 +1858,12 @@ export async function scanProject(directory: string, contract: TestTruth, explic
 import ts from 'typescript';
 
 /** Conservative JS/TS comparison: uncertain syntax and reflective code retain drift. */
+function declaredName(statement: ts.Statement): string[] {
+  if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.flatMap((declaration) => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
+  if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) return statement.name ? [statement.name.text] : [];
+  return [];
+}
 function fingerprint(file: string, content: string): string | undefined {
   if (!/\.[cm]?[jt]sx?$/.test(file) || /\b(?:eval|with)\s*\(/.test(content)) return undefined;
   const options: ts.CompilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.Preserve, noLib: true, noResolve: true, allowJs: true };
@@ -1838,8 +1897,24 @@ function fingerprint(file: string, content: string): string | undefined {
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
     returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
   });
+  const exportedNames = new Set<string>();
   for (const statement of source.statements) {
-    if (!ts.canHaveModifiers(statement) || !ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) return undefined;
+      for (const element of statement.exportClause.elements) exportedNames.add((element.propertyName ?? element.name).text);
+    } else if (ts.isExportAssignment(statement)) {
+      if (!ts.isIdentifier(statement.expression)) return undefined;
+      exportedNames.add(statement.expression.text);
+    }
+  }
+  const declaredNames = new Set(source.statements.flatMap(declaredName));
+  if ([...exportedNames].some((name) => !declaredNames.has(name))) return undefined;
+  for (const statement of source.statements) {
+    const exported = (ts.canHaveModifiers(statement) && !!ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) ||
+      declaredName(statement).some((name) => exportedNames.has(name));
+    if (!exported) continue;
+    if (!(ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) || ts.isVariableStatement(statement))) return undefined;
     if (ts.isFunctionDeclaration(statement)) publicTypes.push(signature(statement));
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) publicTypes.push(printer.printNode(ts.EmitHint.Unspecified, statement, source));
     if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
@@ -1848,6 +1923,7 @@ function fingerprint(file: string, content: string): string | undefined {
       if (ts.isPropertyDeclaration(member)) publicTypes.push(typeText(member.type));
     }
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) return undefined;
       publicTypes.push(typeText(declaration.type));
       if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) publicTypes.push(signature(declaration.initializer));
     }
@@ -1886,7 +1962,7 @@ function fingerprint(file: string, content: string): string | undefined {
     function structure(node: ts.Node): unknown {
       const children: unknown[] = [];
       ts.forEachChild(node, (child) => { children.push(structure(child)); });
-      return [node.kind, children.length ? children : 'text' in node ? node.text : node.getText(parsed)];
+      return [node.kind, ts.isVariableDeclarationList(node) ? node.flags & ts.NodeFlags.BlockScoped : 0, children.length ? children : 'text' in node ? node.text : node.getText(parsed)];
     }
     return JSON.stringify([publicTypes, structure(parsed)]);
   } finally { transformed.dispose(); }
@@ -1913,8 +1989,13 @@ export function specPointers(contract: TestTruth, module?: TestModule): string[]
 }
 export function sliceMarkdown(markdown: string, pointer: string): string {
   specPointerSchema.parse(pointer);
+  if (!pointer.split('#')[1]) return markdown;
+  const [start, end] = sectionBounds(markdown, pointer);
+  return markdown.slice(start, end);
+}
+export function sectionBounds(markdown: string, pointer: string): [number, number] {
   const anchor = pointer.split('#')[1];
-  if (!anchor) return markdown;
+  if (!anchor) return [0, markdown.length];
   const tree = unified().use(remarkParse).parse(markdown);
   const nodes = tree.children as MarkdownNode[];
   const used = new Set<string>();
@@ -1926,7 +2007,7 @@ export function sliceMarkdown(markdown: string, pointer: string): string {
     used.add(slug);
     if (slug !== anchor) continue;
     const next = nodes.slice(index + 1).find((entry) => entry.type === 'heading' && entry.depth! <= node.depth!);
-    return markdown.slice(node.position!.start.offset, next?.position?.start.offset ?? markdown.length);
+    return [node.position!.start.offset!, next?.position?.start.offset ?? markdown.length];
   }
   throw new Error(`Missing heading: ${pointer}`);
 }
@@ -2878,7 +2959,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.7.0' });
+  const server = new McpServer({ name: 'testweave', version: '0.7.1' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -4875,6 +4956,129 @@ test('compiled MCP process uses clean stdio and completes a protocol handshake',
   await client.connect(transport);
   const result = await client.listTools();
   assert.equal(result.tools.length, 10);
+});
+````
+
+````tests/review-regressions.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+import { isCosmeticChange } from '../src/engine/semantic.js';
+import { scopedSpecDiff, impact, specContext } from '../src/engine/queries.js';
+import { diagnose } from '../src/engine/doctor.js';
+import { serializeTestTruth } from '../src/engine/markdown.js';
+import { contractFixture, moduleFixture, repositoryFixture } from './helpers.js';
+
+test('semantic filtering keeps declaration keywords and exported signatures', () => {
+  assert.equal(isCosmeticChange('a.ts', 'let x = 1; x++;', 'const x = 1; x++;'), false);
+  assert.equal(isCosmeticChange('a.ts', 'var x = 1;', 'let x = 1;'), false);
+  assert.equal(isCosmeticChange('a.ts', 'function f(x: number) { return x; } export { f };',
+    'function f(x: string) { return x; } export { f };'), false);
+  assert.equal(isCosmeticChange('a.ts', 'function f(x: number) { return x; } export default f;',
+    'function f(x: string) { return x; } export default f;'), false);
+});
+
+test('spec diffs are clipped to the selected section in both revisions', () => {
+  const before = '# A\nold a\n\n# B\nold b\n';
+  const after = '# A\nnew a\n\n# B\nnew b\n';
+  const diff = 'diff --git a/s.md b/s.md\n--- a/s.md\n+++ b/s.md\n@@ -1,5 +1,5 @@\n # A\n-old a\n+new a\n \n # B\n-old b\n+new b\n';
+  const scoped = scopedSpecDiff(diff, 'spec.md#a', before, after);
+  assert.match(scoped, /new a/);
+  assert.doesNotMatch(scoped, /old b|new b/);
+});
+
+test('spec diffs for added files exclude neighboring sections', () => {
+  const after = '# A\nalpha\n\n# B\nsecret\n';
+  const diff = 'diff --git a/s.md b/s.md\nnew file mode 100644\n--- /dev/null\n+++ b/s.md\n@@ -0,0 +1,5 @@\n+# A\n+alpha\n+\n+# B\n+secret\n';
+  const scoped = scopedSpecDiff(diff, 'spec.md#a', undefined, after);
+  assert.match(scoped, /alpha/);
+  assert.doesNotMatch(scoped, /secret/);
+});
+
+test('deleting a module with an affected linked spec is blocked under docDriftMode block', async (t) => {
+  const { root, git, context } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.docs = ['spec.md#login'];
+  contract.policy.docDriftMode = 'block';
+  await writeFile(path.join(root, 'spec.md'), '# login\nold rule\n');
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await git.add('.');
+  await git.commit('Add linked spec');
+  const linkedBase = (await git.revparse(['HEAD'])).trim();
+  await writeFile(path.join(root, 'spec.md'), '# login\nnew rule\n');
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth({ ...contract, modules: [] }));
+  await git.add('.');
+  await git.commit('Change spec and remove module');
+  const report = await context.analyzer.analyze({ base: linkedBase });
+  assert.equal(report.blocked, true);
+  assert.ok(report.issues.some((issue) => issue.kind === 'stale-spec' && issue.moduleId === 'auth'));
+});
+
+test('brace globs match tracked changed files in drafting diffs', async (t) => {
+  const { root, context } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;\n');
+  const diff = await context.git.diffForPaths!(['src/**/*.{ts,tsx}']);
+  assert.match(diff, /export const login = 2/);
+});
+
+test('spec drafting diffs find spec files whose names contain glob characters', async (t) => {
+  const { root, git } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.modules[0]!.docs = ['docs/[id].md#login'];
+  await mkdir(path.join(root, 'docs'), { recursive: true });
+  await writeFile(path.join(root, 'docs/[id].md'), '# login\nold rule\n');
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await git.add('.');
+  await git.commit('Add bracket spec');
+  await writeFile(path.join(root, 'docs/[id].md'), '# login\nnew rule\n');
+  await writeFile(path.join(root, 'docs/i.md'), '# other\nsibling change\n');
+  await git.add('.');
+  await git.commit('Change bracket spec and sibling');
+  const scoped = await specContext(root, contract, 'auth', await git.revparse(['HEAD~1']).then((sha) => sha.trim()));
+  assert.match(scoped.diff, /\+new rule/);
+  assert.doesNotMatch(scoped.diff, /sibling change/);
+});
+
+test('impact reports modules whose overlapping globs cover planned files', async (t) => {
+  const { root, git } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.modules[0]!.paths = ['future/*/index.ts'];
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await git.add('.');
+  await git.commit('Register future module');
+  const preview = await impact(root, contract, ['future/auth/*.ts']);
+  assert.equal(preview.modules[0]?.id, 'auth');
+});
+
+test('doctor accepts registered paths that discovery excludes', async (t) => {
+  const { root, git, context } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.modules[0]!.paths = ['dist/*.js'];
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await mkdir(path.join(root, 'dist'), { recursive: true });
+  await writeFile(path.join(root, 'dist/a.js'), 'export const a = 1;\n');
+  await git.add('.');
+  await git.commit('Add dist');
+  const checks = await diagnose(context);
+  assert.equal(checks.find((check) => check.id === 'dead-path:auth:dist/*.js')?.ok, true);
+  assert.equal(checks.find((check) => check.id === 'orphaned-module:auth'), undefined);
+});
+
+test('aligned pushes do not audit commit evidence', async (t) => {
+  const { root, git, base, context } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;\n');
+  await context.store.upsert({ ...moduleFixture, description: 'Updated behavior is documented.' });
+  await git.add('.');
+  await git.commit('Change login and document it');
+  const sha = (await git.revparse(['HEAD'])).trim();
+  const readCommits = context.git.commits!.bind(context.git);
+  let audited = false;
+  context.git.commits = async (...args) => { audited = true; return readCommits(...args); };
+  const report = await context.analyzer.analyze({ base, target: sha, prePush: true });
+  assert.equal(report.issues.length, 0);
+  assert.equal(audited, false);
 });
 ````
 
