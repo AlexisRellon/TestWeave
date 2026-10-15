@@ -25,11 +25,11 @@ function excludedPath(file: string): boolean {
   return file.split('/').some((part) => excluded.has(part)) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|\.d\.ts$/.test(file);
 }
 
-export async function listFiles(root: string): Promise<string[]> {
+export async function listFiles(root: string, options: { includeExcluded?: boolean } = {}): Promise<string[]> {
   const git = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
   if (await git.checkIsRepo()) {
     const listed = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
-    return [...new Set(listed.split('\0').filter((file) => file && !excludedPath(file)))].sort();
+    return [...new Set(listed.split('\0').filter((file) => file && !(!options.includeExcluded && excludedPath(file))))].sort();
   }
   const files: string[] = [];
   async function walk(directory: string): Promise<void> {

@@ -12,7 +12,7 @@ export interface GitRepository {
   hookPath(): Promise<string>;
   emptyTree(): Promise<string>;
   readFile?(file: string, ref?: string): Promise<string | undefined>;
-  diffForPaths?(paths: string[]): Promise<string>;
+  diffForPaths?(paths: string[], base?: string, target?: string): Promise<string>;
   commits?(base: string, target: string): Promise<CommitChange[]>;
 }
 export interface CommitChange { sha: string; message: string; files: string[] }
@@ -50,13 +50,19 @@ export class SimpleGitRepository implements GitRepository {
     try { return await readFile(await workspacePath(await this.root(), file), 'utf8'); }
     catch (error) { if (isMissing(error)) return undefined; throw error; }
   }
-  async diffForPaths(paths: string[]): Promise<string> {
+  async diffForPaths(paths: string[], base?: string, target?: string): Promise<string> {
     if (!paths.length) return '';
-    let base: string;
-    try { base = await this.resolve('HEAD'); } catch { base = await this.emptyTree(); }
-    let diff = await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', base, '--', ...paths]);
-    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+    let from: string;
+    if (base) {
+      if (!/^[a-f0-9]{40,64}$/.test(base)) throw new Error('Invalid Git reference');
+      from = base;
+    } else try { from = await this.resolve('HEAD'); } catch { from = await this.emptyTree(); }
     const matches = picomatch(paths, { dot: true });
+    const range = [from, ...(target ? [await this.resolve(target)] : [])];
+    const tracked = (await this.git.raw(['diff', '--name-only', '-z', '--no-renames', ...range, '--'])).split('\0').filter((entry) => entry && matches(entry));
+    let diff = tracked.length ? await this.git.raw(['diff', '--no-ext-diff', '--no-textconv', '--unified=3', ...range, '--', ...tracked.map((file) => `:(literal)${file}`)]) : '';
+    if (target) return diff;
+    const untracked = (await this.git.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
     for (const file of untracked.filter((entry) => matches(entry))) {
       const content = await this.readFile(file);
       if (content === undefined || content.includes('\0')) continue;

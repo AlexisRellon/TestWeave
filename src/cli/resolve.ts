@@ -56,8 +56,9 @@ export async function resolveDrift(context: CliContext, report: DriftReport, opt
       }
     } else if (choice === 'ai') {
       if (!options.provider || !options.model) throw new Error('Interactive AI drafting requires explicit --provider and --model');
-      const source = existing ? await specContext(context.root, contract, existing.id)
-        : { diff: await context.git.diffForPaths?.(issue.files), files: issue.files };
+      const target = report.target === 'working-tree' ? undefined : report.target;
+      const source = existing ? await specContext(context.root, contract, existing.id, report.base, target)
+        : { diff: await context.git.diffForPaths?.(issue.files, report.base, target), files: issue.files };
       context.output.log(`Sending scoped diff/spec context to ${options.provider}: ${wireJson(source, true)}`);
       if (!await ui.confirm('Send this context to the selected provider?')) continue;
       const author = await createModuleAuthor(providerSchema.parse(options.provider), options.model, process.env, options.baseUrl);

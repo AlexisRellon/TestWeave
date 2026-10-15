@@ -4,6 +4,24 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-16
+
+### Fixed
+
+- Semantic filtering keeps changes to `let`, `const` and `var` and changes to separately exported functions, classes and variables, so they still require QA review.
+- Anchored spec context includes only the selected section, in both the old and new versions, including for newly added spec files.
+- Deleting a module that has a blocking linked spec change is now reported as a blocking issue.
+- Source globs with brace patterns such as `src/**/*.{ts,tsx}` include every matching changed file in drafting context.
+- Impact previews catch overlapping globs, such as `future/*/index.ts` and `future/auth/*.ts`, instead of reporting no coverage.
+- Doctor no longer reports registered paths in excluded folders, such as `dist/`, as dead in Git workspaces.
+- Interactive AI drafting uses the same comparison base as the drift report, so committed branch changes reach the provider.
+- Spec files with brackets or other glob characters in their names are found when drafting.
+- Aligned pushes no longer read commit history when there is no stale module to audit.
+
+### Known limitations
+
+- Doctor's exclusion fix applies to Git workspaces; the non-Git folder scan still skips excluded folders.
+
 ## [0.7.0] - 2026-10-15
 
 ### Added
