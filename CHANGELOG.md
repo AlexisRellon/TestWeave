@@ -4,6 +4,14 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-16
+
+### Fixed
+
+- Semantic drift retains changes to prop types and callback signatures in exported wrapped components, including nested wrappers, generic type arguments and referenced local functions, while still ignoring cosmetic edits.
+- Doctor honors registered paths inside discovery-excluded folders in non-Git workspaces while preserving scan exclusions and skipping Git metadata and symbolic links.
+- Scoped spec context uses the empty Git tree before the first commit, returning staged and untracked source/spec changes without failing to resolve HEAD. Invalid explicit revisions still fail.
+
 ## [0.7.1] - 2026-10-16
 
 ### Fixed
