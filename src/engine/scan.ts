@@ -35,7 +35,7 @@ export async function listFiles(root: string, options: { includeExcluded?: boole
   async function walk(directory: string): Promise<void> {
     for (const entry of await readdir(path.join(root, directory), { withFileTypes: true })) {
       const file = directory ? directory + '/' + entry.name : entry.name;
-      if (excludedPath(file) || entry.isSymbolicLink()) continue;
+      if (entry.name === '.git' || entry.isSymbolicLink() || (!options.includeExcluded && excludedPath(file))) continue;
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile()) files.push(file);
       if (files.length > maxFiles) throw new Error('Scan exceeds 10,000 files; narrow the workspace or use Git ignore rules');

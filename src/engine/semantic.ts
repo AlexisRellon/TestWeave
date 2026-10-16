@@ -40,6 +40,17 @@ function fingerprint(file: string, content: string): string | undefined {
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
     returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
   });
+  const initializers = new Set<ts.Node>();
+  const initializerTypes = (node: ts.Node): void => {
+    if (initializers.has(node)) return;
+    initializers.add(node);
+    if (ts.isFunctionLike(node)) { publicTypes.push(signature(node)); return; }
+    if (ts.isTypeNode(node)) { publicTypes.push(typeText(node)); return; }
+    if (ts.isIdentifier(node)) for (const declaration of checker.getSymbolAtLocation(node)?.declarations ?? []) {
+      if (declaration.getSourceFile() === source && (ts.isFunctionDeclaration(declaration) || ts.isVariableDeclaration(declaration))) initializerTypes(declaration);
+    }
+    ts.forEachChild(node, initializerTypes);
+  };
   const exportedNames = new Set<string>();
   for (const statement of source.statements) {
     if (ts.isExportDeclaration(statement)) {
@@ -68,7 +79,7 @@ function fingerprint(file: string, content: string): string | undefined {
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name)) return undefined;
       publicTypes.push(typeText(declaration.type));
-      if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) publicTypes.push(signature(declaration.initializer));
+      if (declaration.initializer) initializerTypes(declaration.initializer);
     }
   }
   publicTypes.push(...[...referenced].map((declaration) => printer.printNode(ts.EmitHint.Unspecified, declaration, source)));

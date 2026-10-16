@@ -1,13 +1,83 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
+import { simpleGit } from 'simple-git';
 
 import { isCosmeticChange } from '../src/engine/semantic.js';
 import { scopedSpecDiff, impact, specContext } from '../src/engine/queries.js';
 import { diagnose } from '../src/engine/doctor.js';
 import { serializeTestTruth } from '../src/engine/markdown.js';
-import { contractFixture, moduleFixture, repositoryFixture } from './helpers.js';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { createContext } from '../src/cli/context.js';
+import { listFiles } from '../src/engine/scan.js';
+
+test('wrapped component signatures preserve prop types without flagging cosmetic edits', () => {
+  for (const expression of [
+    'memo((p: Props) => p.value)',
+    'memo(function Panel(p: Props) { return p.value; })',
+    'memo(forwardRef((p: Props) => p.value))',
+    'memo<Props>(callback)',
+    'memo(implementation)',
+  ]) {
+    const before = `interface Props { value: string } function implementation(p: Props) { return p.value; } export const Panel = ${expression};`;
+    assert.equal(isCosmeticChange('panel.tsx', before, before.replace('value: string', 'value: number')), false, expression);
+    assert.equal(isCosmeticChange('panel.tsx', before, '// formatting only\n' + before), true, expression);
+  }
+  const internal = 'interface Props { value: string } export const Panel = memo((p: Props) => { type Internal = string; return p.value; });';
+  assert.equal(isCosmeticChange('panel.tsx', internal, internal.replace('Internal = string', 'Internal = number')), true);
+  const cyclic = 'const a = b; const b = a; export const Panel = memo(a);';
+  assert.equal(isCosmeticChange('panel.tsx', cyclic, '// comment\n' + cyclic), true);
+});
+
+test('non-Git doctor sees excluded registered paths while discovery still skips them', async (t) => {
+  const root = await temporaryDirectory(t);
+  const context = await createContext(root);
+  await mkdir(path.join(root, 'dist'));
+  await mkdir(path.join(root, '.git'));
+  await writeFile(path.join(root, 'dist/auth.js'), 'export const auth = 1;');
+  await writeFile(path.join(root, '.git/private'), 'Not a workspace source');
+  const contract = contractFixture();
+  contract.modules[0]!.paths = ['dist/*.js', 'missing/*.js'];
+  await context.store.initialize(contract);
+  const checks = await diagnose(context);
+  assert.equal(checks.find((check) => check.id === 'dead-path:auth:dist/*.js')?.ok, true);
+  assert.equal(checks.find((check) => check.id === 'dead-path:auth:missing/*.js')?.ok, false);
+  assert.equal(checks.some((check) => check.id === 'orphaned-module:auth'), false);
+  assert.ok(!(await listFiles(root)).includes('dist/auth.js'));
+  assert.ok(!(await listFiles(root, { includeExcluded: true })).includes('.git/private'));
+  const outside = await temporaryDirectory(t);
+  await writeFile(path.join(outside, 'outside.js'), 'private');
+  try { await symlink(outside, path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) return;
+    throw error;
+  }
+  assert.ok(!(await listFiles(root, { includeExcluded: true })).includes('linked/outside.js'));
+});
+
+test('spec context works before the first Git commit for staged and untracked sections', async (t) => {
+  for (const staged of [false, true]) {
+    const root = await temporaryDirectory(t);
+    const git = simpleGit(root);
+    await git.init(['-b', 'main']);
+    await mkdir(path.join(root, 'src/auth'), { recursive: true });
+    await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 1;\n');
+    await writeFile(path.join(root, 'spec.md'), '# Login\nSign in\n# Other\nUnrelated section\n');
+    const contract = contractFixture();
+    contract.modules[0]!.specs = ['spec.md#login'];
+    const context = await createContext(root);
+    await context.store.initialize(contract);
+    if (staged) await git.add('.');
+    const scoped = await specContext(root, contract, 'auth');
+    assert.equal(scoped.sections[0]?.content, '# Login\nSign in\n');
+    assert.match(scoped.diff, /\+export const login = 1/);
+    assert.match(scoped.diff, /\+Sign in/);
+    assert.doesNotMatch(scoped.diff, /Unrelated section/);
+    assert.deepEqual(scoped.tests, [{ id: 'AUTH-001', title: 'Sign in' }]);
+    await assert.rejects(specContext(root, contract, 'auth', 'invalid-base'), /Invalid Git reference/);
+  }
+});
 
 test('semantic filtering keeps declaration keywords and exported signatures', () => {
   assert.equal(isCosmeticChange('a.ts', 'let x = 1; x++;', 'const x = 1; x++;'), false);
