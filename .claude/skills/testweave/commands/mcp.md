@@ -16,6 +16,8 @@ Prefer scoped tools; the `living-test-contract` resource remains available for f
 - `get_contract_index`: module IDs, paths, spec pointers and test IDs/titles only.
 - `get_modules_for_files(paths)` / `get_module_by_path(path)`: matching modules only.
 - `get_spec_slice(pathOrModuleId)`: referenced Markdown heading sections, uncommitted Git hunks and test headers. Duplicate headings use `-1`, `-2` suffixes.
+
+Scoped spec reads also work before the first Git commit, comparing staged and untracked additions with the empty tree. Invalid explicit baselines remain errors.
 - `impact(paths)`: planned paths/globs to modules, spec sections, test IDs and preconditions. CLI: `testweave impact 'src/auth/**' --json`.
 - `upsert_test_case(moduleId, testCase)` / `remove_test_case(moduleId, testId)`: locked case edits preserving unrelated tests and prose. IDs remain globally unique; the final case cannot be removed. Removing an absent ID is idempotent.
 
