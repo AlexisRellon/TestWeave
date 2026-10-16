@@ -115,7 +115,12 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Run testweave update with --yes or interactive selection across version releases",
               "data": "npx testweave update --yes",
-              "expected": "Refreshes custom skills, IDE rules and MCP launch paths while preserving other servers and comments; updates hooks and reports updated contract status for current version"
+              "expected": "Refreshes custom skills, IDE rules and MCP launch paths while preserving other servers and comments. A dedicated refresh header shows the installed version and workspace, followed by contract created/validated status, integration progress, MCP paths, refreshed/skipped hook status, completion and doctor/restart guidance. No setup banner or agent catalog is printed for unattended refresh; no package download is claimed. Fresh workspaces receive scan guidance."
+            },
+            {
+              "action": "Cancel interactive update, disable hooks, or refresh a malformed contract",
+              "data": "Decline confirmation; update --yes --no-hook; invalid test-truth.md",
+              "expected": "Cancellation writes nothing and prints no completion summary. Disabled hooks are reported as skipped. Invalid contracts fail before integration refresh and never report overall success."
             }
           ],
           "tags": [
@@ -228,7 +233,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Inspect 79 agents catalog and install or update custom skill across targets",
+              "action": "Inspect 79 agents catalog and install or update custom skill across targets; verify compiled update output reports installed version, refresh progress, skipped hooks and restart/doctor guidance without the setup catalog",
               "data": "ALL_AGENTS, installSkill, hasSkill, testweave update",
               "expected": "Validates 23 universal agents and 56 dedicated agents. Installs and refreshes the complete authoritative skills/testweave bundle: SKILL.md, commands/*.md and references/*.md, with working relative links and no duplicate documentation strings in the installer. Missing or changed managed files fail skill diagnostics; refresh preserves unrelated user files. The generated implementation bundle includes all authoritative skill Markdown alongside source, so its runtime resources remain available. A nested resource directory linked outside the workspace is rejected before bundle writes."
             },
@@ -429,7 +434,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Execute MCP tools, contract validations, and server lifecycle matching release version",
               "data": "get_contract, upsert_test_module, check_drift, McpServer current release",
-              "expected": "Contracts are serialized, parsed, server version matches package, and drift is accurately calculated"
+              "expected": "Contracts are serialized, parsed, server version matches package (0.7.3), and drift is accurately calculated"
             }
           ],
           "tags": [

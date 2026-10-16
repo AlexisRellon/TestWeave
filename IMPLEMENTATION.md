@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -642,7 +642,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.2')
+  const program = new Command().name('testweave').version('0.7.3')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -745,6 +745,7 @@ if (invokedPath) {
 
 ````src/cli/init.ts
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import pc from 'picocolors';
 import type { CliContext } from './context.js';
 import { TerminalPrompter, type UserPrompter } from './prompts.js';
@@ -759,12 +760,20 @@ import { formatSelectedSummary } from './agent-selector.js';
 export interface InitOptions { yes?: boolean; hook?: boolean; isUpdate?: boolean }
 
 export async function runInit(context: CliContext, options: InitOptions, prompt: UserPrompter = new TerminalPrompter()): Promise<void> {
-  printBanner(context.output.log);
+  const log = context.output.log;
+  if (options.isUpdate) {
+    const metadata = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+    log(`\n  ${pc.bold('TestWeave integration refresh')}  ${pc.dim(`v${metadata.version}`)}`);
+    log(`  Workspace: ${context.root}`);
+    log('  Using definitions from this installation.\n');
+  } else {
+    printBanner(log);
+  }
 
   const detected = detectIntegrations(context.root);
   const previous = await readConfig(context.root);
 
-  printSetupOverview(context.root, detected, context.output.log);
+  if (!options.isUpdate) printSetupOverview(context.root, detected, log);
 
   const defaults = previous?.integrations ?? [...new Set(['universal', 'cursor', 'claude', ...detected.ides])];
   let integrations: string[];
@@ -791,15 +800,37 @@ export async function runInit(context: CliContext, options: InitOptions, prompt:
     return;
   }
 
+  if (options.isUpdate) log('  Checking the QA contract...');
   const created = await context.store.initialize(createTestTruth(path.basename(context.root)));
+  if (options.isUpdate) {
+    log(`  ${pc.green('✔')} Contract ${created ? 'created' : 'validated'}: test-truth.md`);
+    log('  Refreshing agent skills, IDE rules and MCP registrations...');
+  }
   await installIdeRules(context.root, config.integrations);
-  if (config.hook) await installHook(context.root, context.git);
+  if (options.isUpdate) log(`  ${pc.green('✔')} Agent integrations refreshed`);
+  if (config.hook) {
+    if (options.isUpdate) log('  Refreshing the Git pre-push hook...');
+    await installHook(context.root, context.git);
+    if (options.isUpdate) log(`  ${pc.green('✔')} Git pre-push hook refreshed`);
+  } else if (options.isUpdate) {
+    log(`  Git pre-push hook: skipped${!detected.git ? ' (Git repository not detected)' : ''}`);
+  }
   await saveConfig(context.root, config);
 
   const mcpFiles = [...new Set(config.integrations.flatMap((integration) => {
     const target = mcpTarget(integration, context.root);
     return target ? [target.file] : [];
   }))];
+  if (options.isUpdate) {
+    for (const file of mcpFiles) log(`  MCP configured: ${file}`);
+    log(pc.green('\n  ✔ TestWeave integrations updated.'));
+    if (mcpFiles.length) log('  Restart affected IDEs or AI clients so their MCP servers reconnect.');
+    log('  Verify setup:       testweave doctor');
+    log('  Change agents:      testweave update');
+    log('  Refresh unattended: testweave update --yes\n');
+    if (created) log('  Next: run testweave scan to discover QA coverage for this project.');
+    return;
+  }
   if (mcpFiles.length) context.output.log(`MCP configured: ${mcpFiles.join(', ')}`);
   context.output.log(pc.green(`✔ TestWeave ${pastVerb}. Contract ${created ? 'created' : 'validated'}.`));
   context.output.log('For an existing project, run testweave scan, then testweave scan --apply to add reviewable module drafts. Review project context and scenarios before committing test-truth.md with your code.');
@@ -2970,7 +3001,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.7.2' });
+  const server = new McpServer({ name: 'testweave', version: '0.7.3' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -3410,6 +3441,8 @@ testweave update --yes --no-hook
 
 Use update after upgrading TestWeave or changing selected agents. Interactive update can change integrations; `--yes` uses existing or detected/default selections.
 
+The refresh screen shows the installed version, workspace, contract status, integration progress, MCP configuration paths and hook status, followed by verification and client restart guidance. It uses the installed package's definitions; it does not download or upgrade the TestWeave package.
+
 Update refreshes the entire managed skill bundle, IDE rules, selected MCP launch paths, setup configuration and enabled hooks. It validates the contract while preserving its authored modules and tests. Command and reference documents come from the installed package's `skills/testweave/` bundle; edit that source bundle when developing TestWeave.
 
 Missing or modified managed skill files are restored on refresh. Unrelated user files in the installed skill directory are preserved. Restart affected MCP clients after registration changes. Use [doctor](doctor.md) to verify or repair setup.
@@ -3826,7 +3859,7 @@ import path from 'node:path';
 import { mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import {
   ALL_AGENTS,
   UNIVERSAL_AGENTS,
@@ -4029,7 +4062,12 @@ test('compiled CLI supports update command to refresh rules and skills', async (
   const update = await exec(process.execPath, [cliPath, '--cwd', root, 'update', '--yes']);
   assert.match(update.stdout, /updated/);
   assert.match(update.stdout, /validated/);
-  assert.match(update.stdout, /79 agents/);
+  assert.match(stripVTControlCharacters(update.stdout), /TestWeave integration refresh\s+v\d+\.\d+\.\d+/);
+  assert.match(update.stdout, /Refreshing agent skills, IDE rules and MCP registrations/);
+  assert.match(update.stdout, /Git pre-push hook: skipped/);
+  assert.match(update.stdout, /testweave doctor/);
+  assert.match(update.stdout, /MCP servers reconnect/);
+  assert.doesNotMatch(update.stdout, /Which agents do you want to install to|████|Downloading/);
 
   const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
   const skillContent = await readFile(skillFile, 'utf8');
