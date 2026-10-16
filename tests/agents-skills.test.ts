@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import {
   ALL_AGENTS,
   UNIVERSAL_AGENTS,
@@ -207,7 +207,12 @@ test('compiled CLI supports update command to refresh rules and skills', async (
   const update = await exec(process.execPath, [cliPath, '--cwd', root, 'update', '--yes']);
   assert.match(update.stdout, /updated/);
   assert.match(update.stdout, /validated/);
-  assert.match(update.stdout, /79 agents/);
+  assert.match(stripVTControlCharacters(update.stdout), /TestWeave integration refresh\s+v\d+\.\d+\.\d+/);
+  assert.match(update.stdout, /Refreshing agent skills, IDE rules and MCP registrations/);
+  assert.match(update.stdout, /Git pre-push hook: skipped/);
+  assert.match(update.stdout, /testweave doctor/);
+  assert.match(update.stdout, /MCP servers reconnect/);
+  assert.doesNotMatch(update.stdout, /Which agents do you want to install to|████|Downloading/);
 
   const skillFile = path.join(root, '.agents/skills/testweave/SKILL.md');
   const skillContent = await readFile(skillFile, 'utf8');

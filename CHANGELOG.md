@@ -4,6 +4,12 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-16
+
+### Changed
+
+- Give `testweave update` a dedicated integration refresh screen with installed version, workspace, progress, contract and hook status, MCP paths, and verification/restart guidance. Unattended updates omit the setup banner and agent catalog. Package upgrades remain a separate package-manager operation.
+
 ## [0.7.2] - 2026-10-16
 
 ### Fixed
