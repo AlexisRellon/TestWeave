@@ -90,15 +90,15 @@ export async function specContext(root: string, contract: TestTruth, pathOrModul
   let diff = '';
   // Non-Git workspaces still support deterministic section reads.
   try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
-  diff = await git.diffForPaths!(module?.paths ?? [], base, target);
-  const from = base ?? await git.resolve('HEAD');
+  const from = base ?? await git.resolve('HEAD').catch(() => git.emptyTree());
+  diff = await git.diffForPaths!(module?.paths ?? [], from, target);
   const to = target ? await git.resolve(target) : undefined;
   for (const pointer of pointers) {
     const file = specFile(pointer);
     let before: string | undefined;
     try { before = await git.readFile!(file, from); } catch { /* New repository/document. */ }
     const after = to ? await git.readFile!(file, to) ?? '' : await git.readFile!(file) ?? '';
-    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], base, target), pointer, before, after);
+    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, target), pointer, before, after);
   }
   return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
 }

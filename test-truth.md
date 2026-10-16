@@ -44,7 +44,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Run doctor on healthy, damaged and repaired workspaces; compare doctor --json and disable terminal colors",
               "data": "testweave doctor; testweave doctor --fix; testweave doctor --json; NO_COLOR=1",
-              "expected": "Human output shows a diagnostics heading, aligned named OK/FAIL checks with relevant contract, integration and hook paths, installation version/runtime/workspace/bundle details, disabled-hook information and a passed/total summary. Healthy checks show Everything looks good; failures distinguish automatic from manual repairs. Summary counts diagnostic checks only. JSON remains the existing diagnostic array without presentation metadata, colors or summary text; exit codes remain 0 for healthy and 1 for unresolved checks. --fix reports final repaired results while preserving authored contracts."
+              "expected": "Human output shows a diagnostics heading, aligned named OK/FAIL checks with relevant contract, integration and hook paths, installation version/runtime/workspace/bundle details, disabled-hook information and a passed/total summary. Healthy checks show Everything looks good; failures distinguish automatic from manual repairs. Summary counts diagnostic checks only. JSON remains the existing diagnostic array without presentation metadata, colors or summary text; exit codes remain 0 for healthy and 1 for unresolved checks. --fix reports final repaired results while preserving authored contracts. Registered existing files in excluded folders are reported live in both Git and non-Git workspaces."
             }
           ],
           "tags": [
@@ -233,9 +233,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "expected": "Validates 23 universal agents and 56 dedicated agents. Installs and refreshes the complete authoritative skills/testweave bundle: SKILL.md, commands/*.md and references/*.md, with working relative links and no duplicate documentation strings in the installer. Missing or changed managed files fail skill diagnostics; refresh preserves unrelated user files. The generated implementation bundle includes all authoritative skill Markdown alongside source, so its runtime resources remain available. A nested resource directory linked outside the workspace is rejected before bundle writes."
             },
             {
-              "action": "Run the review regression suite for v0.7.1 spec, semantic, impact and doctor fixes",
+              "action": "Run the review regression suite for spec, semantic, impact and doctor fixes, including v0.7.2 boundary cases",
               "data": "npx tsx --test tests/review-regressions.test.ts",
-              "expected": "All review regression tests pass; each fails when its fix is reverted."
+              "expected": "The suite covers wrapped prop/signature changes versus cosmetic edits, staged and untracked specs before the first Git commit, valid non-Git excluded-folder diagnostics, and existing v0.7.1 cases. The three v0.7.2 regressions fail against v0.7.1 and pass with their repairs."
             }
           ],
           "tags": [
@@ -481,6 +481,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Draft context for a spec whose filename contains glob characters, and for a brace glob source path",
               "data": "docs/[id].md#login with a changed sibling docs/i.md; src/**/*.{ts,tsx}",
               "expected": "The bracket spec diff is returned and the sibling file is excluded. The brace glob returns the changed tracked source file."
+            },
+            {
+              "action": "Read scoped specs and source diffs in a freshly initialized Git repository before its first commit, with staged and untracked files",
+              "data": "get_spec_slice for a module linked to spec.md#login; staged or untracked source and spec files; invalid explicit baseline",
+              "expected": "The empty tree supplies the absent baseline. The selected section, added source/spec hunks and existing test headers are returned without neighboring sections. Invalid explicit revisions still fail."
             }
           ],
           "tags": [
@@ -536,6 +541,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Change let/const/var kind, a separately exported function signature, and a spec section both before and after a committed change",
               "data": "let x = 1 to const x = 1; export { f } with f(x: number) to f(x: string); spec section edited beside an unrelated section",
               "expected": "Declaration kind and exported signature changes keep drift. Spec drift is limited to the selected section in both revisions. Deleting a module with a linked spec change is blocked under docDriftMode block."
+            },
+            {
+              "action": "Change a prop type used by an exported wrapped component while keeping runtime code unchanged, then change only a comment",
+              "data": "memo and forwardRef wrappers with inline callbacks, referenced functions and generic Props arguments; Props.value string to number",
+              "expected": "Prop/signature changes retain stale-module in semantic mode. Comment-only edits remain cosmetic; cyclic local references terminate without hanging."
             }
           ],
           "tags": [
@@ -583,9 +593,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "expected": "Each zero-match path is identified; modules with no live paths are orphaned. Missing spec files and anchors are reported. These findings require manual review; --fix preserves contract definitions."
             },
             {
-              "action": "Run doctor for a registered path under an excluded folder such as dist/ in a Git workspace",
-              "data": "module paths dist/*.js with a tracked dist/a.js",
-              "expected": "The path is reported live, not dead. Non-Git excluded-folder behavior remains a documented limitation."
+              "action": "Run doctor for registered existing and missing paths under excluded folders in Git and non-Git workspaces",
+              "data": "module paths dist/*.js and missing/*.js; existing dist/a.js; .git metadata and symbolic links",
+              "expected": "Existing paths are live and missing paths stay dead. A module with a live path is not orphaned. Discovery still excludes output folders; the non-Git walk skips Git metadata and symbolic links even when doctor includes excluded folders."
             }
           ],
           "tags": [

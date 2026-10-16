@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -642,7 +642,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.1')
+  const program = new Command().name('testweave').version('0.7.2')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -1617,15 +1617,15 @@ export async function specContext(root: string, contract: TestTruth, pathOrModul
   let diff = '';
   // Non-Git workspaces still support deterministic section reads.
   try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
-  diff = await git.diffForPaths!(module?.paths ?? [], base, target);
-  const from = base ?? await git.resolve('HEAD');
+  const from = base ?? await git.resolve('HEAD').catch(() => git.emptyTree());
+  diff = await git.diffForPaths!(module?.paths ?? [], from, target);
   const to = target ? await git.resolve(target) : undefined;
   for (const pointer of pointers) {
     const file = specFile(pointer);
     let before: string | undefined;
     try { before = await git.readFile!(file, from); } catch { /* New repository/document. */ }
     const after = to ? await git.readFile!(file, to) ?? '' : await git.readFile!(file) ?? '';
-    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], base, target), pointer, before, after);
+    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, target), pointer, before, after);
   }
   return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
 }
@@ -1690,7 +1690,7 @@ export async function listFiles(root: string, options: { includeExcluded?: boole
   async function walk(directory: string): Promise<void> {
     for (const entry of await readdir(path.join(root, directory), { withFileTypes: true })) {
       const file = directory ? directory + '/' + entry.name : entry.name;
-      if (excludedPath(file) || entry.isSymbolicLink()) continue;
+      if (entry.name === '.git' || entry.isSymbolicLink() || (!options.includeExcluded && excludedPath(file))) continue;
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile()) files.push(file);
       if (files.length > maxFiles) throw new Error('Scan exceeds 10,000 files; narrow the workspace or use Git ignore rules');
@@ -1897,6 +1897,17 @@ function fingerprint(file: string, content: string): string | undefined {
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
     returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
   });
+  const initializers = new Set<ts.Node>();
+  const initializerTypes = (node: ts.Node): void => {
+    if (initializers.has(node)) return;
+    initializers.add(node);
+    if (ts.isFunctionLike(node)) { publicTypes.push(signature(node)); return; }
+    if (ts.isTypeNode(node)) { publicTypes.push(typeText(node)); return; }
+    if (ts.isIdentifier(node)) for (const declaration of checker.getSymbolAtLocation(node)?.declarations ?? []) {
+      if (declaration.getSourceFile() === source && (ts.isFunctionDeclaration(declaration) || ts.isVariableDeclaration(declaration))) initializerTypes(declaration);
+    }
+    ts.forEachChild(node, initializerTypes);
+  };
   const exportedNames = new Set<string>();
   for (const statement of source.statements) {
     if (ts.isExportDeclaration(statement)) {
@@ -1925,7 +1936,7 @@ function fingerprint(file: string, content: string): string | undefined {
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name)) return undefined;
       publicTypes.push(typeText(declaration.type));
-      if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) publicTypes.push(signature(declaration.initializer));
+      if (declaration.initializer) initializerTypes(declaration.initializer);
     }
   }
   publicTypes.push(...[...referenced].map((declaration) => printer.printNode(ts.EmitHint.Unspecified, declaration, source)));
@@ -2959,7 +2970,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.7.1' });
+  const server = new McpServer({ name: 'testweave', version: '0.7.2' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -3238,6 +3249,8 @@ Doctor validates the contract, setup configuration, selected IDE rules/MCP regis
 
 It also reports `dead-path` for module globs matching no existing workspace files, `orphaned-module` when all of a module's paths are dead, and `dead-spec` for missing linked docs/specs or heading anchors. These are non-repairable findings: inspect and update pointers/scenarios manually. Doctor never deletes definitions to hide these problems.
 
+Registered paths in discovery-excluded folders are checked in both Git and non-Git workspaces. Non-Git checks skip Git metadata and symbolic links; scan keeps its normal discovery exclusions.
+
 `--fix` repairs supported missing or outdated integrations using the package's authoritative bundle. It preserves authored contracts, surrounding IDE instructions, other MCP servers and unrelated files in skill directories. Malformed contracts or unsupported configuration problems require manual repair; inspect diagnostics before editing them.
 
 Exit code 0 means healthy diagnostics, 1 means unresolved checks, and 2 means an operational error. Use [update](update.md) to change selected integrations or refresh definitions after an upgrade.
@@ -3324,6 +3337,8 @@ Prefer scoped tools; the `living-test-contract` resource remains available for f
 - `get_contract_index`: module IDs, paths, spec pointers and test IDs/titles only.
 - `get_modules_for_files(paths)` / `get_module_by_path(path)`: matching modules only.
 - `get_spec_slice(pathOrModuleId)`: referenced Markdown heading sections, uncommitted Git hunks and test headers. Duplicate headings use `-1`, `-2` suffixes.
+
+Scoped spec reads also work before the first Git commit, comparing staged and untracked additions with the empty tree. Invalid explicit baselines remain errors.
 - `impact(paths)`: planned paths/globs to modules, spec sections, test IDs and preconditions. CLI: `testweave impact 'src/auth/**' --json`.
 - `upsert_test_case(moduleId, testCase)` / `remove_test_case(moduleId, testId)`: locked case edits preserving unrelated tests and prose. IDs remain globally unique; the final case cannot be removed. Removing an absent ID is idempotent.
 
@@ -4962,14 +4977,84 @@ test('compiled MCP process uses clean stdio and completes a protocol handshake',
 ````tests/review-regressions.test.ts
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
+import { simpleGit } from 'simple-git';
 
 import { isCosmeticChange } from '../src/engine/semantic.js';
 import { scopedSpecDiff, impact, specContext } from '../src/engine/queries.js';
 import { diagnose } from '../src/engine/doctor.js';
 import { serializeTestTruth } from '../src/engine/markdown.js';
-import { contractFixture, moduleFixture, repositoryFixture } from './helpers.js';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { createContext } from '../src/cli/context.js';
+import { listFiles } from '../src/engine/scan.js';
+
+test('wrapped component signatures preserve prop types without flagging cosmetic edits', () => {
+  for (const expression of [
+    'memo((p: Props) => p.value)',
+    'memo(function Panel(p: Props) { return p.value; })',
+    'memo(forwardRef((p: Props) => p.value))',
+    'memo<Props>(callback)',
+    'memo(implementation)',
+  ]) {
+    const before = `interface Props { value: string } function implementation(p: Props) { return p.value; } export const Panel = ${expression};`;
+    assert.equal(isCosmeticChange('panel.tsx', before, before.replace('value: string', 'value: number')), false, expression);
+    assert.equal(isCosmeticChange('panel.tsx', before, '// formatting only\n' + before), true, expression);
+  }
+  const internal = 'interface Props { value: string } export const Panel = memo((p: Props) => { type Internal = string; return p.value; });';
+  assert.equal(isCosmeticChange('panel.tsx', internal, internal.replace('Internal = string', 'Internal = number')), true);
+  const cyclic = 'const a = b; const b = a; export const Panel = memo(a);';
+  assert.equal(isCosmeticChange('panel.tsx', cyclic, '// comment\n' + cyclic), true);
+});
+
+test('non-Git doctor sees excluded registered paths while discovery still skips them', async (t) => {
+  const root = await temporaryDirectory(t);
+  const context = await createContext(root);
+  await mkdir(path.join(root, 'dist'));
+  await mkdir(path.join(root, '.git'));
+  await writeFile(path.join(root, 'dist/auth.js'), 'export const auth = 1;');
+  await writeFile(path.join(root, '.git/private'), 'Not a workspace source');
+  const contract = contractFixture();
+  contract.modules[0]!.paths = ['dist/*.js', 'missing/*.js'];
+  await context.store.initialize(contract);
+  const checks = await diagnose(context);
+  assert.equal(checks.find((check) => check.id === 'dead-path:auth:dist/*.js')?.ok, true);
+  assert.equal(checks.find((check) => check.id === 'dead-path:auth:missing/*.js')?.ok, false);
+  assert.equal(checks.some((check) => check.id === 'orphaned-module:auth'), false);
+  assert.ok(!(await listFiles(root)).includes('dist/auth.js'));
+  assert.ok(!(await listFiles(root, { includeExcluded: true })).includes('.git/private'));
+  const outside = await temporaryDirectory(t);
+  await writeFile(path.join(outside, 'outside.js'), 'private');
+  try { await symlink(outside, path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) return;
+    throw error;
+  }
+  assert.ok(!(await listFiles(root, { includeExcluded: true })).includes('linked/outside.js'));
+});
+
+test('spec context works before the first Git commit for staged and untracked sections', async (t) => {
+  for (const staged of [false, true]) {
+    const root = await temporaryDirectory(t);
+    const git = simpleGit(root);
+    await git.init(['-b', 'main']);
+    await mkdir(path.join(root, 'src/auth'), { recursive: true });
+    await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 1;\n');
+    await writeFile(path.join(root, 'spec.md'), '# Login\nSign in\n# Other\nUnrelated section\n');
+    const contract = contractFixture();
+    contract.modules[0]!.specs = ['spec.md#login'];
+    const context = await createContext(root);
+    await context.store.initialize(contract);
+    if (staged) await git.add('.');
+    const scoped = await specContext(root, contract, 'auth');
+    assert.equal(scoped.sections[0]?.content, '# Login\nSign in\n');
+    assert.match(scoped.diff, /\+export const login = 1/);
+    assert.match(scoped.diff, /\+Sign in/);
+    assert.doesNotMatch(scoped.diff, /Unrelated section/);
+    assert.deepEqual(scoped.tests, [{ id: 'AUTH-001', title: 'Sign in' }]);
+    await assert.rejects(specContext(root, contract, 'auth', 'invalid-base'), /Invalid Git reference/);
+  }
+});
 
 test('semantic filtering keeps declaration keywords and exported signatures', () => {
   assert.equal(isCosmeticChange('a.ts', 'let x = 1; x++;', 'const x = 1; x++;'), false);
