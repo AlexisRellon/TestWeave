@@ -10,6 +10,10 @@ The terminal report shows a diagnostics heading, aligned OK/FAIL rows with relev
 
 Doctor validates the contract, setup configuration, selected IDE rules/MCP registrations, every managed skill document, and enabled Git hook. Missing, outdated or modified command/reference files make the skill installation unhealthy.
 
+It also reports `dead-path` for module globs matching no existing workspace files, `orphaned-module` when all of a module's paths are dead, and `dead-spec` for missing linked docs/specs or heading anchors. These are non-repairable findings: inspect and update pointers/scenarios manually. Doctor never deletes definitions to hide these problems.
+
+Registered paths in discovery-excluded folders are checked in both Git and non-Git workspaces. Non-Git checks skip Git metadata and symbolic links; scan keeps its normal discovery exclusions.
+
 `--fix` repairs supported missing or outdated integrations using the package's authoritative bundle. It preserves authored contracts, surrounding IDE instructions, other MCP servers and unrelated files in skill directories. Malformed contracts or unsupported configuration problems require manual repair; inspect diagnostics before editing them.
 
 Exit code 0 means healthy diagnostics, 1 means unresolved checks, and 2 means an operational error. Use [update](update.md) to change selected integrations or refresh definitions after an upgrade.
