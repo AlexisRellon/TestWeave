@@ -275,6 +275,8 @@ npx --no-install testweave doctor
 
 Use interactive `update` to change selected integrations, or `update --yes` to refresh the existing/default selections. Restart your MCP client after changing its registration.
 
+The update screen reports the installed version, workspace, contract validation, integration refresh, MCP paths and hook status, then shows verification and restart guidance. Upgrade the package separately with your package manager; this command refreshes project setup from the installed definitions.
+
 ### Hand scenarios to your QA team
 
 ```sh
