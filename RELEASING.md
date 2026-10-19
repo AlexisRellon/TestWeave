@@ -34,7 +34,9 @@ The workflow creates a GitHub Release named **TestWeave v0.2.0**, with that vers
 - `@alexisrellon/testweave` to the GitHub Packages registry (`npm.pkg.github.com`)
 - `testweave` to the public npm registry (`registry.npmjs.org`) via npm Trusted Publishing (OIDC) with provenance attestations
 
-Manual npmjs registry publication is only needed as an exceptional recovery step using the exact tested release tarball:
+Automatic publication requires an npm Trusted Publisher configured for `testweave` matching this repository (`AlexisRellon/TestWeave`) and `release.yml` with permission to publish. If the package does not yet exist on npm, an initial manual publish is required first, since npm cannot configure trust for a package that does not yet exist.
+
+Manual npmjs registry publication is required for that initial publish or as an exceptional recovery step using the exact tested release tarball:
 
 ```sh
 gh release download v0.2.0 --pattern testweave-0.2.0.tgz --pattern SHA256SUMS --dir release-assets
@@ -58,6 +60,15 @@ The live `main` protection is recorded in [.github/main-protection.json](.github
 ```sh
 gh api --method PUT repos/AlexisRellon/TestWeave/branches/main/protection --input .github/main-protection.json
 ```
+
+### npm Trusted Publisher
+
+Automatic publication to npmjs requires an npm Trusted Publisher configured on `testweave`:
+- **Provider:** GitHub Actions
+- **Repository:** `AlexisRellon/TestWeave`
+- **Workflow:** `release.yml`
+
+npm requires the package to exist before trust can be configured. If the package does not yet exist on npm, complete an initial manual publication first, then configure the Trusted Publisher under package **Settings > Publishing access > Trusted Publishers**.
 
 GitHub Actions use commit-pinned references maintained by Dependabot. The CI token has read-only access; only the final release job can write release assets. Do not change PR workflows to `pull_request_target` while checking out untrusted contribution code.
 
