@@ -6287,6 +6287,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -6342,4 +6343,15 @@ jobs:
             publish_args+=(--tag next)
           fi
           npm publish "${publish_args[@]}"
+      - name: Install npm CLI for Trusted Publishing
+        run: npm install -g 'npm@>=11.5.1'
+      - name: Publish to npmjs
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          publish_args=(--access public --provenance)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            publish_args+=(--tag next)
+          fi
+          npm publish "$RUNNER_TEMP/testweave-"*.tgz "${publish_args[@]}"
 ````
