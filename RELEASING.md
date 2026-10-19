@@ -30,9 +30,11 @@ git push origin v0.2.0
 
 The tag must point to a commit on `main`. The workflow validates canonical SemVer, exact package/lockfile/tag agreement, increasing versions, and a unique dated changelog entry. It then runs the full reusable CI matrix before building an npm-compatible tarball.
 
-The workflow creates a GitHub Release named **TestWeave v0.2.0**, with that version's changelog section, installation instructions, `testweave-0.2.0.tgz`, and `SHA256SUMS`. Prerelease tags create GitHub prereleases and do not become the latest stable release. The workflow also automatically publishes `@alexisrellon/testweave` to the GitHub Packages registry (`npm.pkg.github.com`).
+The workflow creates a GitHub Release named **TestWeave v0.2.0**, with that version's changelog section, installation instructions, `testweave-0.2.0.tgz`, and `SHA256SUMS`. Prerelease tags create GitHub prereleases and do not become the latest stable release. The workflow also automatically publishes:
+- `@alexisrellon/testweave` to the GitHub Packages registry (`npm.pkg.github.com`)
+- `testweave` to the public npm registry (`registry.npmjs.org`) via npm Trusted Publishing (OIDC) with provenance attestations
 
-Public npmjs registry publication is a separate maintainer step using the exact tested release tarball:
+Manual npmjs registry publication is only needed as an exceptional recovery step using the exact tested release tarball:
 
 ```sh
 gh release download v0.2.0 --pattern testweave-0.2.0.tgz --pattern SHA256SUMS --dir release-assets
