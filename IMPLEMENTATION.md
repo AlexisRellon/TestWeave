@@ -6166,7 +6166,7 @@ permissions:
 jobs:
   metadata:
     name: Repository checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -6189,7 +6189,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-26.04, windows-latest]
         node: [20, 22, 24]
     runs-on: ${{ matrix.os }}
     steps:
@@ -6210,7 +6210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-26.04, windows-latest]
         manager: [npm, pnpm, yarn-classic, yarn-pnp, bun]
     runs-on: ${{ matrix.os }}
     steps:
@@ -6229,7 +6229,7 @@ jobs:
     name: CI required
     if: always()
     needs: [metadata, check, package-managers]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every check to succeed
@@ -6256,7 +6256,7 @@ concurrency:
 jobs:
   validate:
     name: Validate release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -6282,7 +6282,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [validate, checks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
