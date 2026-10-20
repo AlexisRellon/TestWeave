@@ -198,6 +198,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
         "src/integrations/**/*.ts",
         "tests/**/*.ts",
         "scripts/**/*.{mjs,sh}",
+        ".github/workflows/ci.yml",
         "Formula/**/*.rb"
       ],
       "tests": [
@@ -258,9 +259,9 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Run check:manager script across npm, pnpm, yarn, and bun",
-              "data": "npm run check:manager -- <manager>",
-              "expected": "Installs tarball, executes CLI matching current version, validates doctor and MCP stdio"
+              "action": "Run check:manager across npm, pnpm, yarn, and bun on each CI operating-system lane",
+              "data": ".github/workflows/ci.yml; npm run check:manager -- <manager>",
+              "expected": "The CI matrix runs each package-manager check on the stable ubuntu-24.04 lane, the ubuntu-26.04 validation lane, and Windows. Each job installs the tarball, executes a CLI matching the current version, and validates doctor and MCP stdio."
             }
           ],
           "tags": [
