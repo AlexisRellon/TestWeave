@@ -5,5 +5,6 @@
 - [Sync](sync.md) code/spec alignment, semantic filtering and interactive resolution.
 - [Doctor](doctor.md) configuration, dead paths and missing spec anchors.
 - [Generate](generate.md) exports and optional AI drafts.
+- [Import](import.md) legacy CSV/JSON manual QA definitions.
 - [MCP and impact](mcp.md) scoped context and case-level mutations.
 - [Contract schema](../references/contract-schema.md) and [test design](../references/functional-testing.md).

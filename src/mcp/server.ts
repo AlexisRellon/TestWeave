@@ -11,6 +11,7 @@ import { testModuleSchema, testCaseSchema, sourcePatternSchema } from '../schema
 import { contractIndex, modulesForFiles, specContext, impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
+import { createGitRepository } from '../engine/git.js';
 
 export interface McpDependencies { root: string; store: ContractStore; analyzer: DriftAnalyzer; compact?: boolean }
 async function result(action: () => Promise<unknown>, compact = false): Promise<CallToolResult> {
@@ -22,7 +23,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.7.3' });
+  const server = new McpServer({ name: 'testweave', version: '0.8.0' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -78,10 +79,14 @@ export function createMcpServer(deps: McpDependencies): McpServer {
     return { moduleId: module.id, moduleCount: contract.modules.length, resource: uri };
   }));
   server.registerTool('generate_qa_export', {
-    description: 'Return CSV or JSON test definitions for Jira, Xray, or Zephyr. JSON requires projectKey. Returns content without writing or uploading.',
+    description: 'Export filtered QA definitions, graph/Canvas or Obsidian note bundles locally. Jira/Xray/Zephyr JSON requires projectKey. Does not upload or execute tests.',
     inputSchema: exportOptionsSchema.shape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (options) => respond(async () => generateExport(await deps.store.read(), options)));
+  }, async (options) => respond(async () => {
+    const git = createGitRepository(deps.root);
+    const changedFiles = options.changedSince ? await git.changedFiles(await git.resolve(options.changedSince)) : undefined;
+    return generateExport(await deps.store.read(), options, changedFiles ? { changedFiles } : {});
+  }));
   return server;
 }
 export async function serveMcp(deps: McpDependencies): Promise<McpServer> {

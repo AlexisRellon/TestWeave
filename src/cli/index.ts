@@ -9,6 +9,7 @@ import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
+import { runImport } from './import.js';
 import { runScan } from './scan.js';
 import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
@@ -16,7 +17,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.3')
+  const program = new Command().name('testweave').version('0.8.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -67,8 +68,8 @@ export function createProgram(): Command {
       }
     });
   program.command('generate').description('Export QA definitions, or author an AI module draft')
-    .option('--target <target>', 'jira, xray, or zephyr', 'xray')
-    .option('--format <format>', 'csv or json', 'csv')
+    .option('--target <target>', 'jira, xray, zephyr, testrail, qase, gherkin, checklist, obsidian, canvas or graph', 'xray')
+    .option('--format <format>', 'csv, json; graph also supports mermaid or dot', 'csv')
     .option('--project-key <key>', 'Destination Jira project key (required for JSON)')
     .option('-o, --output <file>', 'Write a new workspace-relative file; default stdout')
     .option('--provider <provider>', 'Opt into AI drafting: openai, anthropic, ollama, custom or gemini')
@@ -76,8 +77,19 @@ export function createProgram(): Command {
     .option('--compact', 'Compact AI prompt and JSON draft')
     .option('--model <model>', 'Explicit provider model ID for AI authoring')
     .option('--context <file>', 'Workspace-relative context file to send to the provider')
-    .option('--module <id>', 'Existing module to update in the AI draft')
+    .option('--module <id>', 'Filter exports to a module, or select the existing module for AI drafting')
+    .option('--tags <tags>', 'Include cases with all comma-separated tags')
+    .option('--priority <priority>', 'low, medium, high or critical')
+    .option('--changed-since <ref>', 'Export modules affected by source/spec changes since a Git revision')
     .action(async (options: unknown) => { await runGenerate(await context(), options); });
+  program.command('import').description('Merge local manual QA definitions into a module')
+    .argument('<file>', 'Workspace-relative CSV or JSON file')
+    .requiredOption('--source <source>', 'jira, xray, zephyr or testrail')
+    .option('--format <format>', 'csv or json', 'csv')
+    .requiredOption('--module <id>', 'Destination module ID')
+    .option('--paths <patterns>', 'Comma-separated source globs; required for a new module')
+    .option('--name <name>', 'Display name for a new module')
+    .action(async (file: string, options: unknown) => { await runImport(await context(), file, options); });
   const mcp = program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
     .option('--compact', 'Compact MCP JSON responses')
     .action(async (options: { compact?: boolean }) => {

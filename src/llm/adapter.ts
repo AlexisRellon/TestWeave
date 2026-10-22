@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { testModuleSchema, type TestModule } from '../schema/test-truth.js';
+import { nftProfileSchema, testModuleSchema, type TestModule } from '../schema/test-truth.js';
 import { QA_SYSTEM_PROMPT } from './prompts.js';
 import { wireJson } from '../engine/wire.js';
 
@@ -15,7 +15,8 @@ export class ValidatedModuleAuthor implements ModuleAuthor {
     const { compact, ...payload } = request;
     const generated = await this.generator.generate(QA_SYSTEM_PROMPT, wireJson(payload, compact));
     const normalized: unknown = JSON.parse(JSON.stringify(generated, (key, value: unknown) =>
-      (key === 'docs' || key === 'specs' || key === 'refs') && value === null ? undefined : value));
+      (key === 'docs' || key === 'specs' || key === 'refs' || key === 'profile' ||
+        key in nftProfileSchema.shape) && value === null ? undefined : value));
     const result = testModuleSchema.parse(normalized);
     if (request.existing && result.id !== request.existing.id) throw new Error('AI changed the existing module ID; draft rejected');
     const ids = result.tests.map((test) => test.id);

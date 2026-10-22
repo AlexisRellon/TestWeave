@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { temporaryDirectory } from './helpers.js';
 import type { Diagnostic } from '../src/engine/doctor.js';
+import { TESTWEAVE_SKILL_FILES } from '../src/integrations/skills.js';
 
 const exec = promisify(execFile);
 const cliPath = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
@@ -34,7 +35,8 @@ test('doctor renders aligned plain diagnostics and an accurate healthy summary',
   assert.match(human.stdout, /Workspace\s+/);
   assert.ok(human.stdout.includes(path.basename(root)));
   assert.match(human.stdout, /Node\.js runtime\s+v\d+/);
-  assert.match(human.stdout, /Skill bundle\s+11 documents/);
+  assert.match(human.stdout, new RegExp('Skill bundle\\s+' + TESTWEAVE_SKILL_FILES.length + ' documents'));
+  assert.match(human.stdout, /Contract schema\s+OK\s+Schema v2/);
   assert.match(human.stdout, /QA contract\s+OK\s+.*test-truth\.md/);
   assert.match(human.stdout, /Claude Code\s+OK\s+.*CLAUDE\.md.*\.mcp\.json.*\.claude\/skills\/testweave/);
   assert.match(human.stdout, /Pre-push hook\s+disabled in project configuration/);

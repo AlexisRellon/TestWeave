@@ -285,6 +285,24 @@ npx --no-install testweave generate --target xray --format csv --output qa/xray-
 
 Review and import the generated artifact in your QA platform. Exports contain test definitions; they do not record execution results or upload cases automatically. Omit `--output` to print to stdout. Choose a new output filename for each export because existing files are not overwritten.
 
+### Schema v2 and portable QA definitions (v0.8.0)
+
+Run `testweave doctor --fix` to migrate a v1 contract. V2 adds shared string `fixtures` referenced in preconditions and steps as `{{fixture.standardUser}}`, package contract `includes` such as `packages/billing/test-truth.md`, and `accessibility`, `security`, `performance` and `compatibility` test types with optional manual check `profile` metadata. Root policy governs included packages; IDs and fixture names are globally unique. Package paths/spec pointers stay relative to the package, while scoped queries and revision-aware drift use their workspace paths. Writes preserve each owning contract and its prose.
+
+```sh
+testweave generate --target testrail --format json --module authentication
+testweave generate --target qase --format csv --tags smoke,release --priority high
+testweave generate --target checklist --changed-since main
+testweave generate --target gherkin --output qa/auth.feature
+testweave generate --target graph --format json --output qa/graph.json
+testweave generate --target graph --format mermaid --output qa/graph.mmd
+testweave generate --target canvas --output qa/coverage.canvas
+testweave generate --target obsidian --output qa-vault
+testweave import qa/legacy.csv --source xray --module authentication --paths 'src/auth/**'
+```
+
+TestRail/Qase JSON is a portable definition bundle; CSV columns can be mapped in destination importers. Graph also supports DOT. Obsidian projection creates linked notes with YAML metadata and stable hashed filenames; subsequent exports refresh managed content while retaining outside prose. Removed notes are retained to protect personal annotations. Drift metadata is `unknown` without a Git baseline and never indicates test execution. Imports support Jira, Xray, Zephyr and TestRail CSV/JSON layouts, reject conflicting IDs, and merge under the contract lock. See the [schema guide](skills/testweave/references/contract-schema.md), [export guide](skills/testweave/commands/generate.md) and [import guide](skills/testweave/commands/import.md) for exact fields and supported layouts.
+
 ## Workspace files
 
 | File or location | Purpose |
@@ -310,7 +328,7 @@ The authoritative contract is housed in a single top-level fenced code block lab
 
 ~~~json testweave
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "project": "AcmeApp",
   "policy": {
     "mode": "block",
@@ -364,7 +382,7 @@ The authoritative contract is housed in a single top-level fenced code block lab
 
 ### Contract Schema Structure
 
-- **`schemaVersion`**: Currently `1`.
+- **`schemaVersion`**: New contracts use `2`; v1 remains readable and `doctor --fix` migrates it while preserving prose and definitions.
 - **`project`**: Project display name.
 - **`policy`**:
   - `mode`: `'block'` (fails check on drift) or `'warn'` (reports drift with exit code 0 unless `--strict` is passed).

@@ -1,13 +1,20 @@
 import { z } from 'zod';
 import { testTruthSchema, TEST_TYPE_LABELS, type TestCase, type TestTruth } from '../schema/test-truth.js';
+import picomatch from 'picomatch';
+import { expandFixtures } from '../engine/includes.js';
+import { canvasGraph, contractGraph, graphDiagram, obsidianNotes } from './graph.js';
 
 export const exportOptionsSchema = z.strictObject({
-  target: z.enum(['jira', 'xray', 'zephyr']).default('xray'),
-  format: z.enum(['csv', 'json']).default('csv'),
+  target: z.enum(['jira', 'xray', 'zephyr', 'testrail', 'qase', 'gherkin', 'checklist', 'obsidian', 'canvas', 'graph']).default('xray'),
+  format: z.enum(['csv', 'json', 'mermaid', 'dot', 'markdown', 'feature']).default('csv'),
   projectKey: z.string().regex(/^[A-Z][A-Z0-9_]*$/).optional(),
+  module: z.string().min(1).optional(),
+  tags: z.string().trim().min(1).optional(),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  changedSince: z.string().min(1).optional(),
 });
 export type ExportOptions = z.infer<typeof exportOptionsSchema>;
-export interface ExportArtifact { content: string; mimeType: string; filename: string; testCount: number }
+export interface ExportArtifact { content: string; mimeType: string; filename: string; testCount: number; files?: Record<string, string> }
 
 export function csvCell(value: string): string {
   // CSV quoting alone does not prevent spreadsheet formula execution.
@@ -69,13 +76,67 @@ function exportJson(contract: TestTruth, options: ExportOptions): unknown {
     } })) },
   })) };
 }
-export function generateExport(input: TestTruth, inputOptions: ExportOptions): ExportArtifact {
-  const contract = testTruthSchema.parse(input);
+export function generateExport(input: TestTruth, inputOptions: ExportOptions,
+  context: { changedFiles?: string[]; drift?: Record<string, string> } = {}): ExportArtifact {
   const options = exportOptionsSchema.parse(inputOptions);
+  if (options.changedSince && !context.changedFiles) throw new Error('changedSince requires Git changed-file context');
+  const original = testTruthSchema.parse(input);
+  if (options.module && !original.modules.some((module) => module.id === options.module)) throw new Error(`Unknown module: ${options.module}`);
+  const tags = options.tags?.split(',').map((tag) => tag.trim()).filter(Boolean);
+  if (tags && !tags.length) throw new Error('Provide at least one tag');
+  const contract = expandFixtures({ ...original, modules: original.modules.filter((module) =>
+    (!options.module || module.id === options.module) && (!context.changedFiles || context.changedFiles.some((file) =>
+      picomatch(module.paths, { dot: true })(file) || [...original.docs ?? [], ...module.docs ?? [], ...module.specs ?? [],
+        ...module.tests.flatMap((test) => test.refs ?? [])]
+        .some((pointer) => pointer.split('#')[0] === file)))).map((module) => ({ ...module,
+    tests: module.tests.filter((test) => (!options.priority || test.priority === options.priority) &&
+      (!tags || tags.every((tag) => test.tags.includes(tag)))),
+  })).filter((module) => module.tests.length) });
+  const testCount = contract.modules.reduce((total, module) => total + module.tests.length, 0);
+  const artifact = (content: string, extension: string, mimeType: string): ExportArtifact => ({
+    content, filename: `testweave-${options.target}.${extension}`, mimeType, testCount,
+  });
+  if (['graph', 'canvas', 'obsidian'].includes(options.target)) {
+    const graph = contractGraph(contract, context.drift);
+    if (options.target === 'obsidian') {
+      const files = obsidianNotes(graph);
+      return { ...artifact(JSON.stringify(files, null, 2) + '\n', 'json', 'application/json'), files };
+    }
+    if (options.target === 'canvas') return artifact(JSON.stringify(canvasGraph(graph), null, 2) + '\n', 'canvas', 'application/json');
+    if (!['csv', 'json', 'mermaid', 'dot'].includes(options.format)) throw new Error('Graph format must be json, mermaid or dot');
+    if (options.format === 'mermaid' || options.format === 'dot') return artifact(graphDiagram(graph, options.format), options.format === 'dot' ? 'dot' : 'mmd', 'text/plain');
+    return artifact(JSON.stringify(graph, null, 2) + '\n', 'json', 'application/json');
+  }
+  const rows = contract.modules.flatMap((module) => module.tests.map((test) => ({ module, test })));
+  if (options.target === 'checklist' || options.target === 'gherkin') {
+    const line = (value: string) => value.replace(/\r?\n/g, ' ');
+    if (options.target === 'checklist') return artifact('# QA release checklist\n\n' + rows.map(({ module, test }) =>
+      `- [ ] ${line(test.id)}: ${line(test.title)} (${module.id}, ${test.priority})\n` +
+      [...test.preconditions.map((value) => `  - Precondition: ${line(value)}`), ...test.steps.map((step) =>
+        `  - ${line(step.action)}; data: ${line(step.data)}; expected: ${line(step.expected)}`),
+      ...(test.profile ? [`  - Profile: ${JSON.stringify(test.profile)}`] : [])].join('\n')).join('\n\n') + '\n', 'md', 'text/markdown');
+    return artifact(contract.modules.map((module) => `Feature: ${line(module.name)}\n\n` + module.tests.map((test) =>
+      `  # ${test.id}; priority: ${test.priority}; type: ${test.type}\n  Scenario: ${line(test.title)}\n` +
+      test.preconditions.map((value) => `    Given ${line(value)}\n`).join('') + test.steps.map((step) =>
+        `    When ${line(step.action)}\n    # Data: ${line(step.data)}\n    Then ${line(step.expected)}\n`).join('')).join('\n')).join('\n'), 'feature', 'text/plain');
+  }
+  if (!['csv', 'json'].includes(options.format)) throw new Error('QA suite exports require csv or json');
+  if (options.target === 'testrail' || options.target === 'qase') {
+    const cases = rows.map(({ module, test }) => ({ id: test.id, title: test.title, section: module.name,
+      priority: test.priority, type: test.type, preconditions: test.preconditions, steps: test.steps, tags: test.tags,
+      ...(test.refs ? { refs: test.refs } : {}), ...(test.profile ? { profile: test.profile } : {}),
+    }));
+    return artifact(options.format === 'json' ? JSON.stringify({ format: `testweave-${options.target}-v1`, cases }, null, 2) + '\n'
+      : csv([['ID', 'Title', 'Section', 'Priority', 'Type', 'Preconditions', 'Steps', 'Expected Result', 'Tags', 'Refs', 'Profile'],
+        ...cases.map((test) => [test.id, test.title, test.section, test.priority, test.type, test.preconditions.join('\n'),
+          JSON.stringify(test.steps), test.steps.map((step) => step.expected).join('\n'), test.tags.join(','),
+          JSON.stringify(test.refs ?? []), JSON.stringify(test.profile ?? null)])]), options.format,
+    options.format === 'csv' ? 'text/csv' : 'application/json');
+  }
   return {
     content: options.format === 'csv' ? exportCsv(contract, options) : JSON.stringify(exportJson(contract, options), null, 2) + '\n',
     mimeType: options.format === 'csv' ? 'text/csv' : 'application/json',
     filename: `testweave-${options.target}.${options.format}`,
-    testCount: contract.modules.reduce((total, module) => total + module.tests.length, 0),
+    testCount,
   };
 }

@@ -4,6 +4,16 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
+### Added
+
+- Living contract schema v2 with doctor migration, manual non-functional profiles, reusable fixtures and package contract includes. Scoped reads, owning-file mutations and Git revision drift support included contracts.
+- Obsidian note projection with YAML metadata and wikilinks, grouped Canvas boards, and JSON/Mermaid/DOT coverage graphs.
+- Local Jira/Xray/Zephyr/TestRail CSV/JSON import with atomic validated merges and conflict protection.
+- TestRail/Qase definition bundles, Gherkin scenarios and Markdown release checklists; exports can filter by module, tags, priority and changed source/spec files since a Git revision.
+- Unit and integration coverage plus manual QA definitions for migration, includes, fixtures, profiles, interoperability, portability and filters.
+
 ## [0.7.3] - 2026-10-16
 
 ### Changed

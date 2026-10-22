@@ -2,7 +2,7 @@ import picomatch from 'picomatch';
 import type { TestModule, TestTruth } from '../schema/test-truth.js';
 import type { ContractStore } from './store.js';
 import type { GitRepository } from './git.js';
-import { parseTestTruth } from './markdown.js';
+import { compileContract } from './includes.js';
 import { isCosmeticChange } from './semantic.js';
 import { auditedBypasses, type BypassAudit } from './bypass.js';
 import { sliceMarkdown, specFile, specPointers } from './specs.js';
@@ -63,8 +63,12 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
       target ? this.git.readContract(target) : this.store.readMarkdown(),
     ]);
     if (!newMarkdown) throw new Error('test-truth.md is missing from the checked revision; run testweave init and commit the contract');
-    const current = parseTestTruth(newMarkdown);
-    const previous = oldMarkdown === undefined ? undefined : parseTestTruth(oldMarkdown);
+    const snapshot = async (markdown: string, ref?: string) => (await compileContract(markdown, async (file) => {
+      if (!this.git.readFile) throw new Error('Git adapter must support readFile for included contracts');
+      return this.git.readFile(file, ref);
+    })).contract;
+    const current = await snapshot(newMarkdown, target);
+    const previous = oldMarkdown === undefined ? undefined : await snapshot(oldMarkdown, base);
     let behavioral = files;
     if (options.semantic && this.git.readFile) {
       const cosmetic = new Set<string>();

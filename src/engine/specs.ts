@@ -8,7 +8,8 @@ interface MarkdownNode { type: string; value?: string; depth?: number; children?
 function textOf(node: MarkdownNode): string { return node.value ?? node.children?.map(textOf).join('') ?? ''; }
 export function specFile(pointer: string): string { return pointer.split('#')[0]!; }
 export function specPointers(contract: TestTruth, module?: TestModule): string[] {
-  return [...new Set([...(contract.docs ?? []), ...(module?.docs ?? []), ...(module?.specs ?? [])])];
+  return [...new Set([...(contract.docs ?? []), ...(module?.docs ?? []), ...(module?.specs ?? []),
+    ...(module?.tests.flatMap((test) => (test.refs ?? []).filter((ref) => /\.md(?:#|$)/i.test(ref))) ?? [])])];
 }
 export function sliceMarkdown(markdown: string, pointer: string): string {
   specPointerSchema.parse(pointer);
