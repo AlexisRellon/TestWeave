@@ -34,6 +34,8 @@ function checkLabel(id: string): string {
   if (id === 'contract') return 'QA contract';
   if (id === 'config') return 'Project config';
   if (id === 'hook') return 'Pre-push hook';
+  if (id === 'schema-version') return 'Contract schema';
+  if (!id.startsWith('ide:')) return id;
   const integration = id.slice('ide:'.length);
   return integration === 'universal' ? 'Universal agents' : findAgent(integration)?.displayName ?? integration;
 }

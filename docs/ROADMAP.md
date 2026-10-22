@@ -74,17 +74,17 @@ Do all heavy parsing locally in Node.js (`src/engine/`) for **0 LLM tokens** and
 ---
 
 ### Milestone v0.8.0 — Schema v2, Obsidian / Graphify Interoperability & QA Portability
-- [ ] **1. Living Contract Schema v2 (`schemaVersion: 2` in `src/schema/`)**
+- [x] **1. Living Contract Schema v2 (`schemaVersion: 2` in `src/schema/`)**
   - Auto-migrate v1 contracts via `testweave doctor --fix`.
   - **Documentation & Spec Pointers:** Top-level `docs`, module-level `specs`/`docs` (with `#heading` anchor support), test-level `refs` (`["PROJ-123", "docs/prd.md#ac-1"]`), and `policy.docDriftMode`.
   - **First-Class Non-Functional Testing (NFT) Profiles:** Extend `type` and optional metadata checklists for `accessibility` (WCAG target, keyboard/screen-reader steps), `security` (authz matrix, session/input boundary checks), and `performance` / `compatibility` (viewport, network throttling, budgets).
   - **Shared Preconditions & Test Data Fixtures (`fixtures`):** Top-level reusable dictionary referenced via `{{fixture.standardUser}}` to eliminate repetitive test strings and reduce tokens.
   - **Modular Contract Splitting for Monorepos (`includes`):** Allow workspace sub-packages (`packages/billing/test-truth.md`) to maintain local module contracts that compile into the root contract.
-- [ ] **2. Obsidian & Graphify Knowledge Graph Interoperability (`src/integrations/`)**
+- [x] **2. Obsidian & Graphify Knowledge Graph Interoperability (`src/integrations/`)**
   - **Obsidian Vault Projection (`testweave generate --target obsidian`):** Export/sync `test-truth.md` into linked Markdown notes with YAML frontmatter (`id`, `priority`, `type`, `tags`, `driftStatus`) and native `[[wikilinks]]` across **Specs/PRDs ↔ Modules ↔ Source Files ↔ Test Scenarios**.
   - **Obsidian Canvas Exporter (`--target canvas`):** Generate a `.canvas` visual board grouping specs, source globs, modules, and test cards color-coded by priority or live drift status.
   - **Graphify / Knowledge Graph Node-Edge Exporter (`--target graph`):** Output a standardized JSON graph topology (`nodes: [...]`, `edges: [...]`) and Mermaid/DOT diagrams for direct ingestion by Graphify, graph-RAG indexers, and the TestWeave UI.
-- [ ] **3. QA Artifact Portability (Importers, Exporters & Selective Filtering)**
+- [x] **3. QA Artifact Portability (Importers, Exporters & Selective Filtering)**
   - **Legacy QA Suite Importer (`testweave import`):** Import existing manual test CSV/JSON dumps from `jira`, `xray`, `zephyr`, or `testrail` and merge them into `test-truth.md`.
   - **New Export Targets (`testweave generate --target`):** Add `testrail` (CSV/JSON), `qase` (CSV/JSON), `gherkin` (`.feature` BDD syntax), and `checklist` (human-readable Markdown `[ ]` release sign-off checklist for PR descriptions).
   - **Selective Export Filtering:** Add `--module <id>`, `--tags <t>`, `--priority <p>`, and `--changed-since <ref>` to export targeted regression subsets.

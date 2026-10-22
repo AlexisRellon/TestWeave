@@ -23,6 +23,6 @@ Scoped spec reads also work before the first Git commit, comparing staged and un
 
 - `analyze_code_drift`: read-only working-tree QA check with optional `base`, `strict`, `semantic`; missing upstream requires an explicit base.
 - `upsert_test_module`: creates or replaces a complete module by ID. Include all scenarios to retain and preserve test IDs.
-- `generate_qa_export`: returns test definitions without writing files or uploading them; JSON requires `projectKey`.
+- `generate_qa_export`: returns vendor definitions, checklist/Gherkin, graph/Canvas or Obsidian note bundles without writing or uploading. Accepts `module`, comma-separated `tags`, `priority` and Git `changedSince`. Only Jira/Xray/Zephyr JSON requires `projectKey`; see [generate](generate.md) for formats.
 
 Read [the contract schema](../references/contract-schema.md) before upserting modules. CLI [scan](scan.md) provides local discovery; it is not an MCP tool.

@@ -4,7 +4,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
 
 ~~~json testweave
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "project": "TestWeave",
   "policy": {
     "mode": "block",
@@ -185,6 +185,31 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "tags": [
             "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "CLI-007",
+          "title": "Import and selectively export local QA definitions",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "Local disposable fixtures with authored QA definitions; no test execution outcomes"
+          ],
+          "steps": [
+            {
+              "action": "Import Jira, Xray, Zephyr and TestRail CSV/JSON into a new module, then reimport and import conflicting or malformed data",
+              "data": "--source; --module; --paths; quoted multiline CSV; stable IDs",
+              "expected": "Valid definitions merge once under the lock, preserve authored cases and prose, and never store execution outcomes. Conflicting IDs, missing steps, invalid paths and malformed rows fail without partial contract writes."
+            },
+            {
+              "action": "Export by module, all selected tags, priority and changed-since ref across vendor, checklist and Gherkin targets",
+              "data": "generate --module cli-core --tags smoke --priority high --changed-since HEAD",
+              "expected": "Filters combine, fixtures expand, invalid revisions fail, and empty selections emit valid empty artifacts. Normal files cannot overwrite existing files; JSON vendor bundles and BDD/checklist text contain definitions only."
+            }
+          ],
+          "tags": [
+            "v0.8.0",
             "regression"
           ]
         }
@@ -382,6 +407,31 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             "v0.7.0",
             "regression"
           ]
+        },
+        {
+          "id": "INT-007",
+          "title": "Project linked QA definitions to Obsidian, Canvas and coverage graphs",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "Local disposable fixtures with authored QA definitions; no test execution outcomes"
+          ],
+          "steps": [
+            {
+              "action": "Generate Obsidian notes, Canvas and JSON/Mermaid/DOT graphs for modules with linked specs, source globs and NFT cases",
+              "data": "--target obsidian|canvas|graph; --format json|mermaid|dot",
+              "expected": "Graph identities and edges link specs, modules, source patterns and tests. Notes start with valid YAML metadata, include native wikilinks and use stable safe filenames. Canvas groups nodes and colors by priority or stale drift. Drift stays unknown without a baseline."
+            },
+            {
+              "action": "Repeat Obsidian projection after editing a case and adding personal prose; place an unmanaged note at a generated filename",
+              "data": "generate --target obsidian --output qa-vault",
+              "expected": "Managed content refreshes while personal prose remains. Unmanaged files and path/symlink escapes are rejected; removed notes are retained and no authored contract or external vault is modified."
+            }
+          ],
+          "tags": [
+            "v0.8.0",
+            "regression"
+          ]
         }
       ]
     },
@@ -435,7 +485,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Execute MCP tools, contract validations, and server lifecycle matching release version",
               "data": "get_contract, upsert_test_module, check_drift, McpServer current release",
-              "expected": "Contracts are serialized, parsed, server version matches package (0.7.3), and drift is accurately calculated"
+              "expected": "Contracts are serialized, parsed, server version matches package (0.8.0), and drift is accurately calculated"
             }
           ],
           "tags": [
@@ -606,6 +656,56 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "tags": [
             "v0.7.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-009",
+          "title": "Migrate schema v1 and validate NFT profiles and shared fixtures",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "Local disposable fixtures with authored QA definitions; no test execution outcomes"
+          ],
+          "steps": [
+            {
+              "action": "Run doctor --fix on a v1 contract with prose, repeat it and inspect a locked or invalid contract",
+              "data": "schemaVersion 1 -> 2; test-truth.md.lock; existing docs/specs/refs",
+              "expected": "Migration validates and locks writes, preserves IDs, definitions and prose, and is idempotent. Invalid contracts and held locks are preserved. Existing spec pointer and drift policy behavior remains available."
+            },
+            {
+              "action": "Author accessibility/security/performance/compatibility profiles and nested fixture references; try invalid metadata, missing fixtures and cycles",
+              "data": "profile wcagTarget/keyboard/screenReader/authzMatrix/session/inputBoundaries/viewports/network/budgets/checklist; {{fixture.standardUser}}",
+              "expected": "Profiles retain acceptance targets without execution outcomes. Fixtures remain tokens in storage and expand in exported steps/preconditions. Missing or cyclic fixtures and invalid profiles fail; strict provider request schemas serialize nullable optional fields and normalize them before storage."
+            }
+          ],
+          "tags": [
+            "v0.8.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "ENG-010",
+          "title": "Compile and safely update split package contracts across Git revisions",
+          "type": "regression",
+          "priority": "high",
+          "preconditions": [
+            "Local disposable fixtures with authored QA definitions; no test execution outcomes"
+          ],
+          "steps": [
+            {
+              "action": "Include package contracts and query/export their cases, then update a case from the root through MCP",
+              "data": "includes: packages/auth/test-truth.md; package-relative source/spec/ref pointers",
+              "expected": "Compiled reads expose workspace-relative paths and globally unique IDs/fixtures. Mutations retain package-local paths and prose in the owning file without copying child modules into the root; root policy governs drift."
+            },
+            {
+              "action": "Change package source and test definitions across base/target commits; test missing/repeated includes, duplicate IDs/fixtures, symlink escapes and concurrent edits",
+              "data": "sync --base <ref>; pre-push committed snapshots; lock files",
+              "expected": "Drift reads includes from the selected revisions rather than the working tree. Unchanged package QA reports stale-module. Invalid include graphs, escaping paths, duplicate identities and concurrent changes fail without partial writes."
+            }
+          ],
+          "tags": [
+            "v0.8.0",
             "regression"
           ]
         }

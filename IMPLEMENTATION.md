@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -511,6 +511,8 @@ function checkLabel(id: string): string {
   if (id === 'contract') return 'QA contract';
   if (id === 'config') return 'Project config';
   if (id === 'hook') return 'Pre-push hook';
+  if (id === 'schema-version') return 'Contract schema';
+  if (!id.startsWith('ide:')) return id;
   const integration = id.slice('ide:'.length);
   return integration === 'universal' ? 'Universal agents' : findAgent(integration)?.displayName ?? integration;
 }
@@ -581,7 +583,7 @@ import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { CliContext } from './context.js';
-import { workspacePath } from '../engine/files.js';
+import { atomicWrite, readOptional, workspacePath } from '../engine/files.js';
 import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
 import { createModuleAuthor, providerSchema } from '../llm/factory.js';
 import { readSpecSlice } from '../engine/specs.js';
@@ -597,6 +599,7 @@ export type GenerateOptions = z.infer<typeof generateOptionsSchema>;
 export async function runGenerate(context: CliContext, input: unknown): Promise<void> {
   const options = generateOptionsSchema.parse(input);
   if (options.provider) {
+    if (options.tags || options.priority || options.changedSince) throw new Error('--tags, --priority and --changed-since filter exports; they cannot be used with --provider');
     if (!options.model || (!options.context && !options.module)) throw new Error('AI authoring requires --model and --context or --module; only scoped context is sent');
     const contract = await context.store.read();
     const existing = options.module ? contract.modules.find((module) => module.id === options.module) : undefined;
@@ -608,10 +611,44 @@ export async function runGenerate(context: CliContext, input: unknown): Promise<
     await emit(context, wireJson(draft, options.compact) + '\n', options.output);
     return;
   }
-  if (options.model || options.context || options.module || options.baseUrl) throw new Error('--model, --context, --module and --base-url require --provider');
+  if (options.model || options.context || options.baseUrl) throw new Error('--model, --context and --base-url require --provider');
+  const changedFiles = options.changedSince ? await context.git.changedFiles(await context.git.resolve(options.changedSince)) : undefined;
+  let drift: Record<string, string> = {};
+  if (['obsidian', 'canvas', 'graph'].includes(options.target)) {
+    let base = options.changedSince;
+    if (!base) base = await context.git.upstream().catch(() => undefined);
+    if (base) {
+      const report = await context.analyzer.analyze({ base });
+      const contract = await context.store.read();
+      drift = Object.fromEntries(contract.modules.map((module) => [module.id,
+        report.issues.find((issue) => issue.moduleId === module.id)?.kind ?? 'aligned']));
+    }
+  }
   const artifact = generateExport(await context.store.read(), {
     target: options.target, format: options.format, ...(options.projectKey ? { projectKey: options.projectKey } : {}),
-  });
+    ...(options.module ? { module: options.module } : {}), ...(options.tags ? { tags: options.tags } : {}),
+    ...(options.priority ? { priority: options.priority } : {}), ...(options.changedSince ? { changedSince: options.changedSince } : {}),
+  }, { ...(changedFiles ? { changedFiles } : {}), drift });
+  if (artifact.files && options.output && options.output !== '-') {
+    const start = '---\n# testweave:projection:start';
+    const end = '<!-- testweave:projection:end -->';
+    const pending = [];
+    for (const [file, content] of Object.entries(artifact.files)) {
+      const target = await workspacePath(context.root, path.posix.join(options.output, file));
+      const existing = await readOptional(target);
+      if (content.includes(start) || content.includes(end)) throw new Error('Projection content contains reserved managed markers');
+      if (existing !== undefined && (!existing.startsWith(start) || existing.split(start).length !== 2 ||
+        existing.split(end).length !== 2 || existing.indexOf(end) < existing.indexOf(start))) {
+        throw new Error(`Refusing to overwrite an unmanaged note: ${target}`);
+      }
+      const block = `${start}\n${content.slice(4)}${end}`;
+      pending.push({ target, content: existing === undefined ? block + '\n'
+        : existing.slice(0, existing.indexOf(start)) + block + existing.slice(existing.indexOf(end) + end.length) });
+    }
+    for (const note of pending) await atomicWrite(note.target, note.content);
+    context.output.error(`Wrote ${pending.length} Obsidian notes`);
+    return;
+  }
   await emit(context, artifact.content, options.output);
 }
 async function emit(context: CliContext, content: string, output?: string): Promise<void> {
@@ -620,6 +657,37 @@ async function emit(context: CliContext, content: string, output?: string): Prom
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, content, { encoding: 'utf8', flag: 'wx' });
   context.output.error(`Wrote ${target}`);
+}
+````
+
+````src/cli/import.ts
+import path from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import type { CliContext } from './context.js';
+import { workspacePath } from '../engine/files.js';
+import { importCases, importOptionsSchema } from '../integrations/importers.js';
+import { testModuleSchema } from '../schema/test-truth.js';
+
+export async function runImport(context: CliContext, file: string, input: unknown): Promise<void> {
+  const options = importOptionsSchema.parse(input);
+  const target = await workspacePath(context.root, file);
+  const info = await stat(target);
+  if (!info.isFile() || info.size > 10_000_000) throw new Error('Import must be a file no larger than 10 MB');
+  const tests = importCases(await readFile(target, 'utf8'), options.source, options.format);
+  const contract = await context.store.read();
+  const existing = contract.modules.find((module) => module.id === options.module);
+  if (!existing && !options.paths) throw new Error('New modules require --paths');
+  for (const test of tests) {
+    const before = existing?.tests.find((entry) => entry.id === test.id);
+    if (before && JSON.stringify(before) !== JSON.stringify(test)) throw new Error(`Existing case differs: ${test.id}; review it before replacing`);
+  }
+  const module = testModuleSchema.parse(existing ? { ...existing,
+    tests: [...existing.tests, ...tests.filter((test) => !existing.tests.some((entry) => entry.id === test.id))],
+  } : { id: options.module, name: options.name ?? options.module,
+    description: `Manual QA definitions imported from ${options.source} (${path.basename(file)}).`,
+    paths: options.paths!.split(',').map((pattern) => pattern.trim()), tests });
+  await context.store.upsert(module, contract);
+  context.output.log(`Imported ${tests.length} test definitions into ${module.id}.`);
 }
 ````
 
@@ -635,6 +703,7 @@ import { runUpdate, type UpdateOptions } from './update.js';
 import { runDoctor, type DoctorOptions } from './doctor.js';
 import { runSync, type SyncOptions } from './sync.js';
 import { runGenerate } from './generate.js';
+import { runImport } from './import.js';
 import { runScan } from './scan.js';
 import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
@@ -642,7 +711,7 @@ import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.7.3')
+  const program = new Command().name('testweave').version('0.8.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -693,8 +762,8 @@ export function createProgram(): Command {
       }
     });
   program.command('generate').description('Export QA definitions, or author an AI module draft')
-    .option('--target <target>', 'jira, xray, or zephyr', 'xray')
-    .option('--format <format>', 'csv or json', 'csv')
+    .option('--target <target>', 'jira, xray, zephyr, testrail, qase, gherkin, checklist, obsidian, canvas or graph', 'xray')
+    .option('--format <format>', 'csv, json; graph also supports mermaid or dot', 'csv')
     .option('--project-key <key>', 'Destination Jira project key (required for JSON)')
     .option('-o, --output <file>', 'Write a new workspace-relative file; default stdout')
     .option('--provider <provider>', 'Opt into AI drafting: openai, anthropic, ollama, custom or gemini')
@@ -702,8 +771,19 @@ export function createProgram(): Command {
     .option('--compact', 'Compact AI prompt and JSON draft')
     .option('--model <model>', 'Explicit provider model ID for AI authoring')
     .option('--context <file>', 'Workspace-relative context file to send to the provider')
-    .option('--module <id>', 'Existing module to update in the AI draft')
+    .option('--module <id>', 'Filter exports to a module, or select the existing module for AI drafting')
+    .option('--tags <tags>', 'Include cases with all comma-separated tags')
+    .option('--priority <priority>', 'low, medium, high or critical')
+    .option('--changed-since <ref>', 'Export modules affected by source/spec changes since a Git revision')
     .action(async (options: unknown) => { await runGenerate(await context(), options); });
+  program.command('import').description('Merge local manual QA definitions into a module')
+    .argument('<file>', 'Workspace-relative CSV or JSON file')
+    .requiredOption('--source <source>', 'jira, xray, zephyr or testrail')
+    .option('--format <format>', 'csv or json', 'csv')
+    .requiredOption('--module <id>', 'Destination module ID')
+    .option('--paths <patterns>', 'Comma-separated source globs; required for a new module')
+    .option('--name <name>', 'Display name for a new module')
+    .action(async (file: string, options: unknown) => { await runImport(await context(), file, options); });
   const mcp = program.command('mcp').description('Serve MCP tools and the contract resource over stdio')
     .option('--compact', 'Compact MCP JSON responses')
     .action(async (options: { compact?: boolean }) => {
@@ -1141,8 +1221,9 @@ import { hasIdeRules, installIdeRules } from '../integrations/ide.js';
 import picomatch from 'picomatch';
 import { listFiles } from './scan.js';
 import { readSpecSlice, specPointers } from './specs.js';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { workspacePath } from './files.js';
+import { compileContract, expandFixtures } from './includes.js';
 
 export interface Diagnostic { id: string; ok: boolean; repairable: boolean; message: string }
 export interface DoctorDependencies { root: string; git: GitRepository; store: ContractStore; cliPath?: string }
@@ -1151,6 +1232,13 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   const diagnostics: Diagnostic[] = [];
   try {
     const contract = await deps.store.read();
+    expandFixtures(contract);
+    const { documents } = await compileContract(await deps.store.readMarkdown(), async (file) => {
+      return readFile(await workspacePath(deps.root, file), 'utf8');
+    });
+    diagnostics.push({ id: 'schema-version', ok: documents.every((document) => document.contract.schemaVersion === 2),
+      repairable: !!deps.store.migrate, message: documents.some((document) => document.contract.schemaVersion === 1)
+        ? 'Schema v1 contract; run doctor --fix to migrate to v2' : 'Schema v2 contracts' });
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
     const listed = await listFiles(deps.root, { includeExcluded: true });
     const files: string[] = [];
@@ -1202,6 +1290,7 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
 export async function repair(deps: DoctorDependencies, checks: Diagnostic[]): Promise<Diagnostic[]> {
   const fix = new Set(checks.filter((check) => !check.ok && check.repairable).map((check) => check.id));
   if (fix.has('contract')) await deps.store.initialize(createTestTruth(path.basename(deps.root)));
+  if (fix.has('schema-version')) await deps.store.migrate?.();
   const config = await readConfig(deps.root) ?? { version: 1, integrations: ['cursor', 'claude'], hook: true } satisfies ProjectConfig;
   if (fix.has('config')) await saveConfig(deps.root, config);
   await installIdeRules(deps.root, config.integrations.filter((integration) => fix.has(`ide:${integration}`)));
@@ -1215,7 +1304,7 @@ import picomatch from 'picomatch';
 import type { TestModule, TestTruth } from '../schema/test-truth.js';
 import type { ContractStore } from './store.js';
 import type { GitRepository } from './git.js';
-import { parseTestTruth } from './markdown.js';
+import { compileContract } from './includes.js';
 import { isCosmeticChange } from './semantic.js';
 import { auditedBypasses, type BypassAudit } from './bypass.js';
 import { sliceMarkdown, specFile, specPointers } from './specs.js';
@@ -1276,8 +1365,12 @@ export class ContractDriftAnalyzer implements DriftAnalyzer {
       target ? this.git.readContract(target) : this.store.readMarkdown(),
     ]);
     if (!newMarkdown) throw new Error('test-truth.md is missing from the checked revision; run testweave init and commit the contract');
-    const current = parseTestTruth(newMarkdown);
-    const previous = oldMarkdown === undefined ? undefined : parseTestTruth(oldMarkdown);
+    const snapshot = async (markdown: string, ref?: string) => (await compileContract(markdown, async (file) => {
+      if (!this.git.readFile) throw new Error('Git adapter must support readFile for included contracts');
+      return this.git.readFile(file, ref);
+    })).contract;
+    const current = await snapshot(newMarkdown, target);
+    const previous = oldMarkdown === undefined ? undefined : await snapshot(oldMarkdown, base);
     let behavioral = files;
     if (options.semantic && this.git.readFile) {
       const cosmetic = new Set<string>();
@@ -1491,6 +1584,86 @@ export function parsePushUpdates(input: string): PushUpdate[] {
   });
 }
 export function isZeroSha(sha: string): boolean { return /^0+$/.test(sha); }
+````
+
+````src/engine/includes.ts
+import path from 'node:path';
+import { parseTestTruth } from './markdown.js';
+import { testTruthSchema, type TestModule, type TestTruth } from '../schema/test-truth.js';
+
+export interface ContractDocument { file: string; contract: TestTruth; markdown: string }
+export function rebaseModule(module: TestModule, directory: string, reverse = false): TestModule {
+  const prefix = (value: string): string => {
+    if (reverse && !value.startsWith(`${directory}/`)) throw new Error(`Included module paths must stay inside ${directory}: ${value}`);
+    return reverse ? value.slice(directory.length + 1) : `${directory}/${value}`;
+  };
+  if (!directory || directory === '.') return module;
+  return { ...module, paths: module.paths.map(prefix),
+    ...(module.docs ? { docs: module.docs.map(prefix) } : {}),
+    ...(module.specs ? { specs: module.specs.map(prefix) } : {}),
+    tests: module.tests.map((test) => ({ ...test, ...(test.refs ? {
+      refs: test.refs.map((ref) => /\.md(?:#|$)/i.test(ref) ? prefix(ref) : ref),
+    } : {}) })),
+  };
+}
+
+export async function compileContract(markdown: string, read: (file: string) => Promise<string | undefined>): Promise<{
+  contract: TestTruth; documents: ContractDocument[];
+}> {
+  const documents: ContractDocument[] = [];
+  const seen = new Set<string>();
+  const visit = async (file: string, content: string): Promise<void> => {
+    if (seen.has(file)) throw new Error(`Repeated or cyclic contract include: ${file}`);
+    if (documents.length >= 100) throw new Error('At most 100 contract documents may be included');
+    seen.add(file);
+    const contract = parseTestTruth(content);
+    documents.push({ file, contract, markdown: content });
+    for (const include of contract.includes ?? []) {
+      const child = path.posix.join(path.posix.dirname(file), include);
+      const next = await read(child);
+      if (next === undefined) throw new Error(`Missing included contract: ${child}`);
+      await visit(child, next);
+    }
+  };
+  await visit('test-truth.md', markdown);
+  const root = documents[0]!.contract;
+  const fixtures = { ...root.fixtures };
+  for (const document of documents.slice(1)) for (const [key, value] of Object.entries(document.contract.fixtures ?? {})) {
+    if (Object.hasOwn(fixtures, key)) throw new Error(`Duplicate fixture: ${key}`);
+    fixtures[key] = value;
+  }
+  const contract = testTruthSchema.parse({ ...root,
+    ...(Object.keys(fixtures).length ? { fixtures } : {}),
+    docs: documents.flatMap((document) => (document.contract.docs ?? []).map((pointer) =>
+      path.posix.join(path.posix.dirname(document.file), pointer))),
+    modules: documents.flatMap((document) => document.contract.modules.map((module) =>
+      rebaseModule(module, path.posix.dirname(document.file)))),
+  });
+  // Preserve omitted fields for optimistic comparisons and compact contracts.
+  if (!contract.docs?.length && !root.docs) delete contract.docs;
+  return { contract, documents };
+}
+
+export function expandFixtures(contract: TestTruth): TestTruth {
+  const cache = new Map<string, string>();
+  const expand = (value: string, active: string[] = []): string => {
+    const result = value.replace(/\{\{fixture\.([a-zA-Z0-9._-]+)\}\}/g, (_, key: string) => {
+    const fixture = contract.fixtures && Object.hasOwn(contract.fixtures, key) ? contract.fixtures[key] : undefined;
+    if (fixture === undefined) throw new Error(`Unknown fixture: ${key}`);
+    if (active.includes(key)) throw new Error(`Cyclic fixture: ${[...active, key].join(' -> ')}`);
+    if (active.length >= 100) throw new Error('Fixture nesting exceeds 100 levels');
+    if (!cache.has(key)) cache.set(key, expand(fixture, [...active, key]));
+    return cache.get(key)!;
+    });
+    if (result.length > 20_000) throw new Error('Expanded fixture text exceeds 20,000 characters');
+    return result;
+  };
+  for (const key of Object.keys(contract.fixtures ?? {})) expand(`{{fixture.${key}}}`);
+  return { ...contract, modules: contract.modules.map((module) => ({ ...module, tests: module.tests.map((test) => ({
+    ...test, preconditions: test.preconditions.map((value) => expand(value)),
+    steps: test.steps.map((step) => ({ action: expand(step.action), data: expand(step.data), expected: expand(step.expected) })),
+  })) })) };
+}
 ````
 
 ````src/engine/markdown.ts
@@ -2027,7 +2200,8 @@ interface MarkdownNode { type: string; value?: string; depth?: number; children?
 function textOf(node: MarkdownNode): string { return node.value ?? node.children?.map(textOf).join('') ?? ''; }
 export function specFile(pointer: string): string { return pointer.split('#')[0]!; }
 export function specPointers(contract: TestTruth, module?: TestModule): string[] {
-  return [...new Set([...(contract.docs ?? []), ...(module?.docs ?? []), ...(module?.specs ?? [])])];
+  return [...new Set([...(contract.docs ?? []), ...(module?.docs ?? []), ...(module?.specs ?? []),
+    ...(module?.tests.flatMap((test) => (test.refs ?? []).filter((ref) => /\.md(?:#|$)/i.test(ref))) ?? [])])];
 }
 export function sliceMarkdown(markdown: string, pointer: string): string {
   specPointerSchema.parse(pointer);
@@ -2065,8 +2239,9 @@ export async function readSpecSlice(root: string, pointer: string): Promise<stri
 ````src/engine/store.ts
 import path from 'node:path';
 import { testCaseSchema, testModuleSchema, testTruthSchema, type TestCase, type TestModule, type TestTruth } from '../schema/test-truth.js';
-import { atomicWrite, nodeFileSystem, readOptional, rejectSymlink, type FileSystem } from './files.js';
-import { parseTestTruth, replaceContractBlock, serializeTestTruth } from './markdown.js';
+import { atomicWrite, nodeFileSystem, readOptional, rejectSymlink, workspacePath, type FileSystem } from './files.js';
+import { replaceContractBlock, serializeTestTruth } from './markdown.js';
+import { compileContract, rebaseModule } from './includes.js';
 
 export interface ContractStore {
   read(): Promise<TestTruth>;
@@ -2076,6 +2251,7 @@ export interface ContractStore {
   append(modules: TestModule[], expected: TestTruth): Promise<TestTruth>;
   upsertCase(moduleId: string, testCase: TestCase): Promise<TestTruth>;
   removeCase(moduleId: string, testId: string): Promise<TestTruth>;
+  migrate?(): Promise<void>;
 }
 export class MarkdownContractStore implements ContractStore {
   readonly file: string;
@@ -2084,7 +2260,17 @@ export class MarkdownContractStore implements ContractStore {
     await rejectSymlink(this.file, this.io);
     return this.io.readFile(this.file, 'utf8');
   }
-  async read(): Promise<TestTruth> { return parseTestTruth(await this.readMarkdown()); }
+  private async compile(markdown: string) {
+    return compileContract(markdown, async (file) => readOptional(await workspacePath(path.dirname(this.file), file, this.io), this.io));
+  }
+  async read(): Promise<TestTruth> { return (await this.compile(await this.readMarkdown())).contract; }
+  async migrate(): Promise<void> {
+    const { documents } = await this.compile(await this.readMarkdown());
+    for (const document of documents) if (document.contract.schemaVersion === 1) {
+      const store = new MarkdownContractStore(path.dirname(path.join(path.dirname(this.file), document.file)), this.io);
+      await store.update((current) => ({ ...current, schemaVersion: 2 }));
+    }
+  }
   async initialize(contract: TestTruth): Promise<boolean> {
     if (await readOptional(this.file, this.io) !== undefined) { await this.read(); return false; }
     await this.io.writeFile(this.file, serializeTestTruth(contract), { encoding: 'utf8', flag: 'wx' });
@@ -2129,10 +2315,33 @@ export class MarkdownContractStore implements ContractStore {
     });
     try {
       const markdown = await this.readMarkdown();
-      const current = parseTestTruth(markdown);
+      const { contract: current, documents } = await this.compile(markdown);
       const updated = testTruthSchema.parse(transform(current));
+      // Mutations touch one owning document; never flatten package contracts into the root.
+      const changed = documents.filter((document) => document.contract.modules.some((module) =>
+        JSON.stringify(current.modules.find((entry) => entry.id === module.id)) !==
+        JSON.stringify(updated.modules.find((entry) => entry.id === module.id))));
+      const added = updated.modules.filter((module) => !current.modules.some((entry) => entry.id === module.id));
+      const owner = changed[0] ?? documents[0]!;
+      if (changed.length > 1 || (owner !== documents[0] && added.length)) throw new Error('Update one contract document at a time');
+      const owned = new Set(owner.contract.modules.map((module) => module.id));
+      const persisted = testTruthSchema.parse({ ...owner.contract,
+        schemaVersion: updated.schemaVersion === 2 ? 2 : owner.contract.schemaVersion,
+        modules: updated.modules.filter((module) => owned.has(module.id) || added.some((entry) => entry.id === module.id))
+          .map((module) => rebaseModule(module, path.posix.dirname(owner.file), true)),
+      });
       if (await this.readMarkdown() !== markdown) throw new Error('Contract changed during update; retry');
-      await atomicWrite(this.file, replaceContractBlock(markdown, updated), this.io);
+      for (const document of documents.slice(1)) {
+        const file = await workspacePath(path.dirname(this.file), document.file, this.io);
+        if (await this.io.readFile(file, 'utf8') !== document.markdown) throw new Error('Included contract changed during update; retry');
+      }
+      const destination = await workspacePath(path.dirname(this.file), owner.file, this.io);
+      const childLock = owner !== documents[0] ? `${destination}.lock` : undefined;
+      if (childLock) await this.io.writeFile(childLock, String(process.pid), { flag: 'wx' });
+      try {
+        if (await this.io.readFile(destination, 'utf8') !== owner.markdown) throw new Error('Contract changed during update; retry');
+        await atomicWrite(destination, replaceContractBlock(owner.markdown, persisted), this.io);
+      } finally { if (childLock) await this.io.unlink(childLock); }
       return updated;
     } finally { await this.io.unlink(lock); }
   }
@@ -2155,6 +2364,7 @@ export * from './schema/test-truth.js';
 export * from './engine/markdown.js';
 export * from './engine/files.js';
 export * from './engine/store.js';
+export * from './engine/includes.js';
 export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
@@ -2172,6 +2382,8 @@ export * from './integrations/vscode.js';
 export * from './integrations/runtime.js';
 export * from './integrations/hooks.js';
 export * from './integrations/exporters.js';
+export * from './integrations/importers.js';
+export * from './integrations/graph.js';
 export * from './llm/adapter.js';
 export * from './llm/factory.js';
 export * from './llm/prompts.js';
@@ -2354,14 +2566,21 @@ export async function saveConfig(root: string, config: ProjectConfig): Promise<v
 ````src/integrations/exporters.ts
 import { z } from 'zod';
 import { testTruthSchema, TEST_TYPE_LABELS, type TestCase, type TestTruth } from '../schema/test-truth.js';
+import picomatch from 'picomatch';
+import { expandFixtures } from '../engine/includes.js';
+import { canvasGraph, contractGraph, graphDiagram, obsidianNotes } from './graph.js';
 
 export const exportOptionsSchema = z.strictObject({
-  target: z.enum(['jira', 'xray', 'zephyr']).default('xray'),
-  format: z.enum(['csv', 'json']).default('csv'),
+  target: z.enum(['jira', 'xray', 'zephyr', 'testrail', 'qase', 'gherkin', 'checklist', 'obsidian', 'canvas', 'graph']).default('xray'),
+  format: z.enum(['csv', 'json', 'mermaid', 'dot', 'markdown', 'feature']).default('csv'),
   projectKey: z.string().regex(/^[A-Z][A-Z0-9_]*$/).optional(),
+  module: z.string().min(1).optional(),
+  tags: z.string().trim().min(1).optional(),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  changedSince: z.string().min(1).optional(),
 });
 export type ExportOptions = z.infer<typeof exportOptionsSchema>;
-export interface ExportArtifact { content: string; mimeType: string; filename: string; testCount: number }
+export interface ExportArtifact { content: string; mimeType: string; filename: string; testCount: number; files?: Record<string, string> }
 
 export function csvCell(value: string): string {
   // CSV quoting alone does not prevent spreadsheet formula execution.
@@ -2423,15 +2642,142 @@ function exportJson(contract: TestTruth, options: ExportOptions): unknown {
     } })) },
   })) };
 }
-export function generateExport(input: TestTruth, inputOptions: ExportOptions): ExportArtifact {
-  const contract = testTruthSchema.parse(input);
+export function generateExport(input: TestTruth, inputOptions: ExportOptions,
+  context: { changedFiles?: string[]; drift?: Record<string, string> } = {}): ExportArtifact {
   const options = exportOptionsSchema.parse(inputOptions);
+  if (options.changedSince && !context.changedFiles) throw new Error('changedSince requires Git changed-file context');
+  const original = testTruthSchema.parse(input);
+  if (options.module && !original.modules.some((module) => module.id === options.module)) throw new Error(`Unknown module: ${options.module}`);
+  const tags = options.tags?.split(',').map((tag) => tag.trim()).filter(Boolean);
+  if (tags && !tags.length) throw new Error('Provide at least one tag');
+  const contract = expandFixtures({ ...original, modules: original.modules.filter((module) =>
+    (!options.module || module.id === options.module) && (!context.changedFiles || context.changedFiles.some((file) =>
+      picomatch(module.paths, { dot: true })(file) || [...original.docs ?? [], ...module.docs ?? [], ...module.specs ?? [],
+        ...module.tests.flatMap((test) => test.refs ?? [])]
+        .some((pointer) => pointer.split('#')[0] === file)))).map((module) => ({ ...module,
+    tests: module.tests.filter((test) => (!options.priority || test.priority === options.priority) &&
+      (!tags || tags.every((tag) => test.tags.includes(tag)))),
+  })).filter((module) => module.tests.length) });
+  const testCount = contract.modules.reduce((total, module) => total + module.tests.length, 0);
+  const artifact = (content: string, extension: string, mimeType: string): ExportArtifact => ({
+    content, filename: `testweave-${options.target}.${extension}`, mimeType, testCount,
+  });
+  if (['graph', 'canvas', 'obsidian'].includes(options.target)) {
+    const graph = contractGraph(contract, context.drift);
+    if (options.target === 'obsidian') {
+      const files = obsidianNotes(graph);
+      return { ...artifact(JSON.stringify(files, null, 2) + '\n', 'json', 'application/json'), files };
+    }
+    if (options.target === 'canvas') return artifact(JSON.stringify(canvasGraph(graph), null, 2) + '\n', 'canvas', 'application/json');
+    if (!['csv', 'json', 'mermaid', 'dot'].includes(options.format)) throw new Error('Graph format must be json, mermaid or dot');
+    if (options.format === 'mermaid' || options.format === 'dot') return artifact(graphDiagram(graph, options.format), options.format === 'dot' ? 'dot' : 'mmd', 'text/plain');
+    return artifact(JSON.stringify(graph, null, 2) + '\n', 'json', 'application/json');
+  }
+  const rows = contract.modules.flatMap((module) => module.tests.map((test) => ({ module, test })));
+  if (options.target === 'checklist' || options.target === 'gherkin') {
+    const line = (value: string) => value.replace(/\r?\n/g, ' ');
+    if (options.target === 'checklist') return artifact('# QA release checklist\n\n' + rows.map(({ module, test }) =>
+      `- [ ] ${line(test.id)}: ${line(test.title)} (${module.id}, ${test.priority})\n` +
+      [...test.preconditions.map((value) => `  - Precondition: ${line(value)}`), ...test.steps.map((step) =>
+        `  - ${line(step.action)}; data: ${line(step.data)}; expected: ${line(step.expected)}`),
+      ...(test.profile ? [`  - Profile: ${JSON.stringify(test.profile)}`] : [])].join('\n')).join('\n\n') + '\n', 'md', 'text/markdown');
+    return artifact(contract.modules.map((module) => `Feature: ${line(module.name)}\n\n` + module.tests.map((test) =>
+      `  # ${test.id}; priority: ${test.priority}; type: ${test.type}\n  Scenario: ${line(test.title)}\n` +
+      test.preconditions.map((value) => `    Given ${line(value)}\n`).join('') + test.steps.map((step) =>
+        `    When ${line(step.action)}\n    # Data: ${line(step.data)}\n    Then ${line(step.expected)}\n`).join('')).join('\n')).join('\n'), 'feature', 'text/plain');
+  }
+  if (!['csv', 'json'].includes(options.format)) throw new Error('QA suite exports require csv or json');
+  if (options.target === 'testrail' || options.target === 'qase') {
+    const cases = rows.map(({ module, test }) => ({ id: test.id, title: test.title, section: module.name,
+      priority: test.priority, type: test.type, preconditions: test.preconditions, steps: test.steps, tags: test.tags,
+      ...(test.refs ? { refs: test.refs } : {}), ...(test.profile ? { profile: test.profile } : {}),
+    }));
+    return artifact(options.format === 'json' ? JSON.stringify({ format: `testweave-${options.target}-v1`, cases }, null, 2) + '\n'
+      : csv([['ID', 'Title', 'Section', 'Priority', 'Type', 'Preconditions', 'Steps', 'Expected Result', 'Tags', 'Refs', 'Profile'],
+        ...cases.map((test) => [test.id, test.title, test.section, test.priority, test.type, test.preconditions.join('\n'),
+          JSON.stringify(test.steps), test.steps.map((step) => step.expected).join('\n'), test.tags.join(','),
+          JSON.stringify(test.refs ?? []), JSON.stringify(test.profile ?? null)])]), options.format,
+    options.format === 'csv' ? 'text/csv' : 'application/json');
+  }
   return {
     content: options.format === 'csv' ? exportCsv(contract, options) : JSON.stringify(exportJson(contract, options), null, 2) + '\n',
     mimeType: options.format === 'csv' ? 'text/csv' : 'application/json',
     filename: `testweave-${options.target}.${options.format}`,
-    testCount: contract.modules.reduce((total, module) => total + module.tests.length, 0),
+    testCount,
   };
+}
+````
+
+````src/integrations/graph.ts
+import type { TestTruth } from '../schema/test-truth.js';
+import { createHash } from 'node:crypto';
+
+export interface GraphNode {
+  id: string; kind: 'spec' | 'module' | 'source' | 'test'; label: string;
+  priority?: string; type?: string; tags?: string[]; driftStatus: string; content: string;
+}
+export interface ContractGraph { nodes: GraphNode[]; edges: { source: string; target: string; relation: string }[] }
+export function contractGraph(contract: TestTruth, drift: Record<string, string> = {}): ContractGraph {
+  const nodes = new Map<string, GraphNode>();
+  const edges: ContractGraph['edges'] = [];
+  const add = (kind: GraphNode['kind'], key: string, label = key, content = ''): string => {
+    const id = `${kind}:${key}`;
+    if (!nodes.has(id)) nodes.set(id, { id, kind, label, content, driftStatus: 'unknown' });
+    return id;
+  };
+  const link = (source: string, target: string, relation: string) => {
+    if (!edges.some((edge) => edge.source === source && edge.target === target && edge.relation === relation)) edges.push({ source, target, relation });
+  };
+  for (const pointer of contract.docs ?? []) add('spec', pointer);
+  for (const module of contract.modules) {
+    const id = add('module', module.id, module.name, module.description);
+    nodes.get(id)!.driftStatus = drift[module.id] ?? 'unknown';
+    for (const pointer of [...contract.docs ?? [], ...module.docs ?? [], ...module.specs ?? []]) link(add('spec', pointer), id, 'specifies');
+    for (const source of module.paths) link(id, add('source', source), 'covers');
+    for (const test of module.tests) {
+      const testId = add('test', test.id, test.title,
+        [...test.preconditions.map((value) => `Precondition: ${value}`), ...test.steps.map((step, index) =>
+          `${index + 1}. ${step.action}\n   Data: ${step.data}\n   Expected: ${step.expected}`),
+        ...(test.profile ? [`Profile: ${JSON.stringify(test.profile)}`] : [])].join('\n\n'));
+      Object.assign(nodes.get(testId)!, { priority: test.priority, type: test.type, tags: test.tags, driftStatus: drift[module.id] ?? 'unknown' });
+      link(id, testId, 'defines');
+      for (const ref of test.refs ?? []) if (/\.md(?:#|$)/i.test(ref)) link(add('spec', ref), testId, 'verifies');
+    }
+  }
+  return { nodes: [...nodes.values()], edges };
+}
+// Encoded identities avoid collisions and make all note names safe on Windows.
+export function noteName(id: string): string { return createHash('sha256').update(id).digest('hex'); }
+export function obsidianNotes(graph: ContractGraph): Record<string, string> {
+  return Object.fromEntries(graph.nodes.map((node) => [`${noteName(node.id)}.md`,
+    '---\n' + Object.entries({ id: node.id, priority: node.priority ?? null, type: node.type ?? node.kind,
+      tags: node.tags ?? [], driftStatus: node.driftStatus }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n') +
+    `\n---\n\n# ${node.label.replace(/[\r\n]/g, ' ')}\n\n${node.content}\n\n` +
+    graph.edges.filter((edge) => edge.source === node.id || edge.target === node.id).map((edge) => {
+      const other = edge.source === node.id ? edge.target : edge.source;
+      return `- ${edge.relation}: [[${noteName(other)}]]`;
+    }).join('\n') + '\n']));
+}
+export function canvasGraph(graph: ContractGraph): unknown {
+  const kinds = ['spec', 'module', 'source', 'test'];
+  const groups = kinds.map((kind, index) => ({ id: `group-${kind}`, type: 'group', label: kind,
+    x: index * 460, y: -60, width: 440, height: Math.max(1, graph.nodes.filter((node) => node.kind === kind).length) * 260 + 80,
+  }));
+  return { nodes: [...groups, ...graph.nodes.map((node) => ({
+    id: noteName(node.id), type: 'text', text: `${node.label}\n\n${node.content}`, x: kinds.indexOf(node.kind) * 460 + 20,
+    y: graph.nodes.filter((entry) => entry.kind === node.kind).indexOf(node) * 260, width: 400, height: 240,
+    color: node.driftStatus.startsWith('stale') ? '1' : ({ critical: '1', high: '2', medium: '3', low: '4' }[node.priority ?? ''] ?? '5'),
+  }))], edges: graph.edges.map((edge, index) => ({ id: `edge-${index}`, fromNode: noteName(edge.source),
+    toNode: noteName(edge.target), fromSide: 'right', toSide: 'left', label: edge.relation })) };
+}
+export function graphDiagram(graph: ContractGraph, format: 'mermaid' | 'dot'): string {
+  const quote = (value: string) => JSON.stringify(value.replace(/[<>]/g, '').replace(/\r?\n/g, ' '));
+  const ids = new Map(graph.nodes.map((node, index) => [node.id, `n${index}`]));
+  return (format === 'dot' ? 'digraph TestWeave {\n' : 'flowchart LR\n') +
+    graph.nodes.map((node) => format === 'dot' ? `  ${ids.get(node.id)} [label=${quote(node.label)}];`
+      : `  ${ids.get(node.id)}[${quote(node.label.replaceAll('"', "'"))}]`).join('\n') + '\n' +
+    graph.edges.map((edge) => format === 'dot' ? `  ${ids.get(edge.source)} -> ${ids.get(edge.target)} [label=${quote(edge.relation)}];`
+      : `  ${ids.get(edge.source)} -->|${edge.relation}| ${ids.get(edge.target)}`).join('\n') + (format === 'dot' ? '\n}\n' : '\n');
 }
 ````
 
@@ -2557,6 +2903,124 @@ export async function hasIdeRules(root: string, integration: IdeIntegration): Pr
     return await hasSkill(root, skillsDir);
   }
   return true;
+}
+````
+
+````src/integrations/importers.ts
+import { z } from 'zod';
+import { testCaseSchema, type TestCase } from '../schema/test-truth.js';
+
+export const importOptionsSchema = z.strictObject({
+  source: z.enum(['jira', 'xray', 'zephyr', 'testrail']),
+  format: z.enum(['csv', 'json']), module: z.string().min(1),
+  paths: z.string().min(1).optional(), name: z.string().min(1).optional(),
+});
+type Row = Record<string, unknown>;
+const record = (value: unknown): Row => z.record(z.string(), z.unknown()).parse(value);
+function field(row: Row, ...names: string[]): string {
+  for (const name of names) {
+    const value = row[name];
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+  }
+  return '';
+}
+function strings(value: unknown): string[] {
+  if (value === undefined || value === '') return [];
+  if (Array.isArray(value)) return z.array(z.string()).parse(value);
+  return z.string().parse(value).split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean);
+}
+export function parseCsv(content: string): Row[] {
+  const rows: string[][] = [];
+  let row: string[] = [], cell = '', quoted = false, closed = false;
+  const finishCell = () => { row.push(cell); cell = ''; closed = false; };
+  const finishRow = () => { finishCell(); if (row.some(Boolean)) rows.push(row); row = []; };
+  const source = content.replace(/^\uFEFF/, '');
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index]!;
+    if (quoted) {
+      if (char === '"' && source[index + 1] === '"') { cell += '"'; index++; }
+      else if (char === '"') { quoted = false; closed = true; }
+      else cell += char;
+    } else if (char === ',') finishCell();
+    else if (char === '\r' || char === '\n') { if (char === '\r' && source[index + 1] === '\n') index++; finishRow(); }
+    else if (char === '"' && !cell && !closed) quoted = true;
+    else { if (closed || char === '"') throw new Error('Malformed CSV quoting'); cell += char; }
+  }
+  if (quoted) throw new Error('Unterminated CSV quote');
+  if (cell || row.length || closed) finishRow();
+  const headers = rows.shift();
+  if (!headers || new Set(headers).size !== headers.length || headers.some((header) => !header)) throw new Error('CSV requires unique nonempty headers');
+  return rows.map((values) => {
+    if (values.length !== headers.length) throw new Error('CSV row width does not match headers');
+    return Object.fromEntries(headers.map((header, index) => [header, values[index]!]));
+  });
+}
+function descriptionSteps(value: string): { preconditions: string[]; steps: { action: string; data: string; expected: string }[] } {
+  const preconditions = value.split('Preconditions:\n')[1]?.split(/\n\n(?=\d+\.)/)[0]?.split('\n').filter(Boolean) ?? [];
+  const steps = [...value.matchAll(/(?:^|\n\n)\d+\. ([\s\S]*?)\nData: ([\s\S]*?)\nExpected: ([\s\S]*?)(?=\n\n\d+\. |$)/g)]
+    .map((match) => ({ action: match[1]!, data: match[2]!, expected: match[3]! }));
+  return { preconditions, steps };
+}
+export function importCases(content: string, source: 'jira' | 'xray' | 'zephyr' | 'testrail', format: 'csv' | 'json'): TestCase[] {
+  if (Buffer.byteLength(content) > 10_000_000) throw new Error('Import must be no larger than 10 MB');
+  let rows: Row[];
+  if (format === 'csv') rows = parseCsv(content);
+  else {
+    const value: unknown = JSON.parse(content);
+    if (Array.isArray(value)) rows = value.map(record);
+    else {
+      const root = record(value);
+      if (Array.isArray(root.projects)) rows = root.projects.flatMap((project) => z.array(z.unknown()).parse(record(project).issues).map(record));
+      else rows = z.array(z.unknown()).parse(root.cases ?? root.tests ?? root.issues).map(record);
+    }
+  }
+  const tests = new Map<string, TestCase>();
+  let lastId = '';
+  for (const outer of rows) {
+    const row = { ...outer, ...(outer.fields ? record(outer.fields) : {}), ...(outer.testCase ? record(outer.testCase) : {}) };
+    const summary = field(row, 'title', 'summary', 'Summary', 'Name', 'Title', 'name');
+    const bracket = /^\[([^\]]+)\]\s*(.*)/s.exec(summary);
+    const id = field(row, 'externalId', 'External ID', 'Test Case Identifier', 'ID', 'id', 'key') || bracket?.[1] || (source === 'zephyr' ? lastId : '');
+    if (!id) throw new Error('Imported case requires a stable ID');
+    const title = bracket?.[2] || summary || tests.get(id)?.title;
+    const description = field(row, 'description', 'Description', 'Objective', 'objective');
+    const described = descriptionSteps(description);
+    let rawSteps: unknown = row.steps ?? row.custom_steps_separated ?? row.Steps;
+    if (typeof rawSteps === 'string') {
+      try { rawSteps = JSON.parse(rawSteps); } catch { rawSteps = [{ action: rawSteps, expected: field(row, 'Expected Result', 'custom_expected'), data: '' }]; }
+    }
+    if (outer.testSteps) rawSteps = record(outer.testSteps).items;
+    let steps = rawSteps === undefined ? described.steps : z.array(z.unknown()).parse(rawSteps).map((value) => {
+      const raw = record(value);
+      const step = raw.inline ? record(raw.inline) : raw;
+      return { action: field(step, 'action', 'content', 'description'), data: field(step, 'data', 'testData'),
+        expected: field(step, 'expected', 'result', 'expectedResult') };
+    });
+    const action = field(row, 'Action', 'Test Script (Step-by-Step) - Step');
+    if (action) steps = [{ action, data: field(row, 'Data', 'Test Script (Step-by-Step) - Test Data'),
+      expected: field(row, 'Expected Result', 'Test Script (Step-by-Step) - Expected Result') }];
+    const previous = tests.get(id);
+    if (previous) {
+      if (source !== 'xray' && source !== 'zephyr') throw new Error(`Duplicate imported ID: ${id}`);
+      if (summary && title !== previous.title) throw new Error(`Conflicting imported ID: ${id}`);
+      tests.set(id, testCaseSchema.parse({ ...previous, steps: [...previous.steps, ...steps] }));
+    } else {
+      const rawPriority = typeof row.priority === 'object' && row.priority ? field(record(row.priority), 'name') : field(row, 'priority', 'Priority', 'priorityName');
+      const priority = ({ '1': 'low', '2': 'medium', '3': 'high', '4': 'critical', highest: 'critical', normal: 'medium' } as Record<string, string>)[rawPriority.toLowerCase()] ?? (rawPriority.toLowerCase() || 'medium');
+      const preconditions = row.preconditions ?? row.Preconditions ?? row.Precondition ?? row.precondition ?? row.custom_preconds;
+      const type = field(row, 'type', 'Type', 'testtype', 'Test Type') || 'regression';
+      const refs = typeof row.Refs === 'string' ? JSON.parse(row.Refs) as unknown : row.refs;
+      const profile = typeof row.Profile === 'string' ? JSON.parse(row.Profile) as unknown : row.profile;
+      tests.set(id, testCaseSchema.parse({ id, title, priority, type: type === 'Manual' ? 'regression' : type,
+        preconditions: preconditions === undefined ? described.preconditions : Array.isArray(preconditions) ? preconditions : String(preconditions).split('\n').filter(Boolean),
+        steps, tags: strings(row.tags ?? row.Labels ?? row.labels ?? row.Tags),
+        ...(refs ? { refs } : {}), ...(profile ? { profile } : {}),
+      }));
+    }
+    lastId = id;
+  }
+  if (!tests.size) throw new Error('Import contains no cases');
+  return [...tests.values()];
 }
 ````
 
@@ -2844,7 +3308,7 @@ export async function hasVsCodeServer(root: string): Promise<boolean> {
 
 ````src/llm/adapter.ts
 import { z } from 'zod';
-import { testModuleSchema, type TestModule } from '../schema/test-truth.js';
+import { nftProfileSchema, testModuleSchema, type TestModule } from '../schema/test-truth.js';
 import { QA_SYSTEM_PROMPT } from './prompts.js';
 import { wireJson } from '../engine/wire.js';
 
@@ -2860,7 +3324,8 @@ export class ValidatedModuleAuthor implements ModuleAuthor {
     const { compact, ...payload } = request;
     const generated = await this.generator.generate(QA_SYSTEM_PROMPT, wireJson(payload, compact));
     const normalized: unknown = JSON.parse(JSON.stringify(generated, (key, value: unknown) =>
-      (key === 'docs' || key === 'specs' || key === 'refs') && value === null ? undefined : value));
+      (key === 'docs' || key === 'specs' || key === 'refs' || key === 'profile' ||
+        key in nftProfileSchema.shape) && value === null ? undefined : value));
     const result = testModuleSchema.parse(normalized);
     if (request.existing && result.id !== request.existing.id) throw new Error('AI changed the existing module ID; draft rejected');
     const ids = result.tests.map((test) => test.id);
@@ -2990,6 +3455,7 @@ import { testModuleSchema, testCaseSchema, sourcePatternSchema } from '../schema
 import { contractIndex, modulesForFiles, specContext, impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
 import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
+import { createGitRepository } from '../engine/git.js';
 
 export interface McpDependencies { root: string; store: ContractStore; analyzer: DriftAnalyzer; compact?: boolean }
 async function result(action: () => Promise<unknown>, compact = false): Promise<CallToolResult> {
@@ -3001,7 +3467,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.7.3' });
+  const server = new McpServer({ name: 'testweave', version: '0.8.0' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -3057,10 +3523,14 @@ export function createMcpServer(deps: McpDependencies): McpServer {
     return { moduleId: module.id, moduleCount: contract.modules.length, resource: uri };
   }));
   server.registerTool('generate_qa_export', {
-    description: 'Return CSV or JSON test definitions for Jira, Xray, or Zephyr. JSON requires projectKey. Returns content without writing or uploading.',
+    description: 'Export filtered QA definitions, graph/Canvas or Obsidian note bundles locally. Jira/Xray/Zephyr JSON requires projectKey. Does not upload or execute tests.',
     inputSchema: exportOptionsSchema.shape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (options) => respond(async () => generateExport(await deps.store.read(), options)));
+  }, async (options) => respond(async () => {
+    const git = createGitRepository(deps.root);
+    const changedFiles = options.changedSince ? await git.changedFiles(await git.resolve(options.changedSince)) : undefined;
+    return generateExport(await deps.store.read(), options, changedFiles ? { changedFiles } : {});
+  }));
   return server;
 }
 export async function serveMcp(deps: McpDependencies): Promise<McpServer> {
@@ -3102,6 +3572,10 @@ export const TEST_TYPES = [
   'interface',
   'component',
   'e2e',
+  'accessibility',
+  'security',
+  'performance',
+  'compatibility',
 ] as const;
 
 export type TestType = typeof TEST_TYPES[number];
@@ -3119,6 +3593,10 @@ export const TEST_TYPE_LABELS: Record<TestType, string> = {
   interface: 'Interface Testing',
   component: 'Component Testing',
   e2e: 'End-to-End Testing',
+  accessibility: 'Accessibility Testing',
+  security: 'Security Testing',
+  performance: 'Performance Testing',
+  compatibility: 'Compatibility Testing',
 };
 
 const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
@@ -3167,6 +3645,10 @@ const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
   'end to end': 'e2e',
   'end-to-end': 'e2e',
   'end-to-end testing': 'e2e',
+  'accessibility testing': 'accessibility',
+  'security testing': 'security',
+  'performance testing': 'performance',
+  'compatibility testing': 'compatibility',
 };
 
 export const testTypeSchema = z.preprocess((value) => {
@@ -3175,6 +3657,18 @@ export const testTypeSchema = z.preprocess((value) => {
   return TEST_TYPE_SYNONYMS[normalized] ?? normalized;
 }, z.enum(TEST_TYPES));
 
+export const nftProfileSchema = z.strictObject({
+  wcagTarget: text.optional(),
+  keyboard: z.array(text).max(100).optional(),
+  screenReader: z.array(text).max(100).optional(),
+  authzMatrix: z.array(z.strictObject({ role: text, resource: text, access: z.enum(['allow', 'deny']) })).max(100).optional(),
+  session: z.array(text).max(100).optional(),
+  inputBoundaries: z.array(text).max(100).optional(),
+  viewports: z.array(z.strictObject({ width: z.number().int().positive(), height: z.number().int().positive() })).max(100).optional(),
+  network: text.optional(),
+  budgets: z.array(z.strictObject({ metric: text, limit: z.number().nonnegative().finite(), unit: text })).max(100).optional(),
+  checklist: z.array(text).max(100).optional(),
+});
 const baseTestCaseSchema = z.strictObject({
   id: identifier,
   title: text,
@@ -3184,6 +3678,7 @@ const baseTestCaseSchema = z.strictObject({
   steps: z.array(testStepSchema).min(1).max(500),
   tags: z.array(z.string().trim().min(1).max(100)).max(100).default([]),
   refs: z.array(text).max(100).optional(),
+  profile: nftProfileSchema.optional(),
 });
 
 export const testCaseSchema = z.preprocess((input) => {
@@ -3210,12 +3705,20 @@ export const testModuleSchema = z.strictObject({
 export const structuredModuleSchema = testModuleSchema.extend({
   docs: z.array(specPointerSchema).max(100).nullable().optional(),
   specs: z.array(specPointerSchema).max(100).nullable().optional(),
-  tests: z.array(baseTestCaseSchema.extend({ refs: z.array(text).max(100).nullable().optional() })).min(1).max(1000),
+  tests: z.array(baseTestCaseSchema.extend({
+    refs: z.array(text).max(100).nullable().optional(),
+    profile: nftProfileSchema.extend(Object.fromEntries(
+      Object.entries(nftProfileSchema.shape).map(([key, field]) => [key, field.nullable()]),
+    )).nullable().optional(),
+  })).min(1).max(1000),
 });
 export const testTruthSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   project: text,
   docs: z.array(specPointerSchema).max(100).optional(),
+  fixtures: z.record(identifier, text).optional(),
+  includes: z.array(specPointerSchema.refine((value) => !value.includes('#') && value.endsWith('/test-truth.md'),
+    'Includes must name a subdirectory test-truth.md without an anchor')).max(100).optional(),
   policy: z.strictObject({
     mode: z.enum(['block', 'warn']),
     sourceGlobs: z.array(sourcePatternSchema).min(1).max(100),
@@ -3224,6 +3727,10 @@ export const testTruthSchema = z.strictObject({
   }),
   modules: z.array(testModuleSchema).max(10_000),
 }).superRefine((contract, context) => {
+  if (contract.schemaVersion === 1 && (contract.fixtures || contract.includes || contract.modules.some((module) =>
+    module.tests.some((test) => test.profile || ['accessibility', 'security', 'performance', 'compatibility'].includes(test.type))))) {
+    context.addIssue({ code: 'custom', message: 'Fixtures, includes and NFT profiles require schemaVersion 2' });
+  }
   const moduleIds = new Set<string>();
   const testIds = new Set<string>();
   for (const [moduleIndex, module] of contract.modules.entries()) {
@@ -3243,7 +3750,7 @@ export type TestTruth = z.infer<typeof testTruthSchema>;
 
 export function createTestTruth(project: string): TestTruth {
   return testTruthSchema.parse({
-    schemaVersion: 1, project,
+    schemaVersion: 2, project,
     policy: {
       mode: 'block',
       sourceGlobs: ['**/*.{ts,tsx,js,jsx,mjs,cjs,vue,svelte,py,go,rs,java,kt,cs,rb,php,swift,c,cpp,h,sql,sh}'],
@@ -3278,6 +3785,8 @@ The terminal report shows a diagnostics heading, aligned OK/FAIL rows with relev
 
 Doctor validates the contract, setup configuration, selected IDE rules/MCP registrations, every managed skill document, and enabled Git hook. Missing, outdated or modified command/reference files make the skill installation unhealthy.
 
+The `schema-version` diagnostic identifies v1 documents. `--fix` migrates root and included v1 contracts to v2 with validation, locking and prose preservation. Fixture references are checked for missing keys, cycles and excessive expansion; broken include graphs are reported as contract errors. Repair never invents missing fixtures or package contracts.
+
 It also reports `dead-path` for module globs matching no existing workspace files, `orphaned-module` when all of a module's paths are dead, and `dead-spec` for missing linked docs/specs or heading anchors. These are non-repairable findings: inspect and update pointers/scenarios manually. Doctor never deletes definitions to hide these problems.
 
 Registered paths in discovery-excluded folders are checked in both Git and non-Git workspaces. Non-Git checks skip Git metadata and symbolic links; scan keeps its normal discovery exclusions.
@@ -3297,7 +3806,19 @@ testweave generate --target xray --format csv --output qa/xray-tests.csv
 testweave generate --target jira --format json --project-key PROJ
 ```
 
-Targets are `jira`, `xray` and `zephyr`; formats are `csv` and `json`. Defaults are Xray CSV. JSON requires `--project-key`. Omit `--output`, or use `--output -`, for stdout. File output must be within the workspace and cannot overwrite an existing file.
+Targets are `jira`, `xray`, `zephyr`, `testrail`, `qase`, `gherkin`, `checklist`, `obsidian`, `canvas` and `graph`. Defaults are Xray CSV. Jira/Xray/Zephyr JSON requires `--project-key`. Omit `--output`, or use `--output -`, for stdout. File output must be within the workspace and cannot overwrite an existing file.
+
+TestRail/Qase support CSV and JSON definition bundles. Map CSV columns in the destination importer; JSON is a portable TestWeave bundle, not an API upload. Gherkin emits `.feature` text; checklist emits unchecked Markdown. Graph emits JSON by default or accepts `--format mermaid|dot`. Canvas emits JSON Canvas with grouped, priority-colored cards (stale drift is red).
+
+```sh
+testweave generate --target checklist --module authentication --tags smoke,release --priority high
+testweave generate --target testrail --format json --changed-since main
+testweave generate --target graph --format mermaid --output qa/coverage.mmd
+testweave generate --target canvas --output qa/coverage.canvas
+testweave generate --target obsidian --output qa-vault
+```
+
+Filters combine: module ID, all comma-separated tags, exact priority, and modules whose source paths or spec files changed since a Git ref (including working changes). Invalid refs fail. Obsidian output is a directory of generated Markdown notes with YAML frontmatter and bidirectional wikilinks. Repeating projection refreshes managed blocks and preserves outside prose; unmanaged notes are protected. Removed nodes are retained on disk so personal notes are never deleted. Without `--output`, Obsidian emits a JSON filename/content bundle. Projection uses hashed stable filenames to avoid unsafe paths and collisions. Drift is `unknown` without an upstream/ref, otherwise it reports current Git alignment; it never represents execution outcomes.
 
 Exports contain definitions, not execution results. Review the artifact before importing it; generate does not upload cases.
 
@@ -3321,6 +3842,21 @@ testweave generate --provider gemini --model <model> --module authentication
 Drafts are schema-validated and emitted for review; generate does not apply them to the contract. With `--module`, preserve the existing identity and retain required scenarios when applying the complete draft. Read [the contract schema](../references/contract-schema.md) and [functional testing](../references/functional-testing.md) to review its quality.
 ````
 
+````skills/testweave/commands/import.md
+# Import manual QA definitions
+
+```sh
+testweave import qa/legacy.csv --source xray --module authentication --paths 'src/auth/**'
+testweave import qa/testrail.json --source testrail --format json --module authentication
+```
+
+Sources: `jira`, `xray`, `zephyr`, `testrail`; formats: CSV (default), JSON. Input must be a workspace file of at most 10 MB. A new module requires comma-separated `--paths`; `--name` sets its display name. Existing modules retain authored paths, specs and scenarios. IDs must be stable and globally unique. Reimporting identical definitions is safe; conflicting existing cases are rejected for review, with no partial contract write.
+
+Supported layouts include generated Jira issue bundles, Xray arrays/step CSV, Zephyr case-and-step bundles/continuation CSV, TestRail `cases`/`tests` JSON (including `custom_steps_separated`) and CSV with ID, Title, Preconditions, Steps and Expected Result columns. CSV quoting, commas, escaped quotes and multiline steps are supported. Unknown vendor layouts must be mapped to these columns first. Rows without actionable steps and expected outcomes are rejected. Imports only author definitions; execution results are never stored.
+
+See [generate](generate.md) for portable exports and [contract schema](../references/contract-schema.md) for validation rules.
+````
+
 ````skills/testweave/commands/index.md
 # Focused guides
 
@@ -3329,6 +3865,7 @@ Drafts are schema-validated and emitted for review; generate does not apply them
 - [Sync](sync.md) code/spec alignment, semantic filtering and interactive resolution.
 - [Doctor](doctor.md) configuration, dead paths and missing spec anchors.
 - [Generate](generate.md) exports and optional AI drafts.
+- [Import](import.md) legacy CSV/JSON manual QA definitions.
 - [MCP and impact](mcp.md) scoped context and case-level mutations.
 - [Contract schema](../references/contract-schema.md) and [test design](../references/functional-testing.md).
 ````
@@ -3375,7 +3912,7 @@ Scoped spec reads also work before the first Git commit, comparing staged and un
 
 - `analyze_code_drift`: read-only working-tree QA check with optional `base`, `strict`, `semantic`; missing upstream requires an explicit base.
 - `upsert_test_module`: creates or replaces a complete module by ID. Include all scenarios to retain and preserve test IDs.
-- `generate_qa_export`: returns test definitions without writing files or uploading them; JSON requires `projectKey`.
+- `generate_qa_export`: returns vendor definitions, checklist/Gherkin, graph/Canvas or Obsidian note bundles without writing or uploading. Accepts `module`, comma-separated `tags`, `priority` and Git `changedSince`. Only Jira/Xray/Zephyr JSON requires `projectKey`; see [generate](generate.md) for formats.
 
 Read [the contract schema](../references/contract-schema.md) before upserting modules. CLI [scan](scan.md) provides local discovery; it is not an MCP tool.
 ````
@@ -3455,7 +3992,7 @@ Missing or modified managed skill files are restored on refresh. Unrelated user 
 
 ## Contract and policy
 
-- `schemaVersion`: 1.
+- `schemaVersion`: 2 for new contracts. V1 remains readable; `doctor --fix` migrates it under the contract lock, preserving prose and definitions.
 - `project`: nonempty display name.
 - `policy.mode`: `block` or `warn`.
 - `policy.sourceGlobs`: 1–100 positive workspace-relative POSIX globs covering behavior-bearing files.
@@ -3474,7 +4011,7 @@ Optional module `docs` and `specs` contain up to 100 document pointers each. The
 
 A test requires `id`, `title`, `priority` and `steps`. Omitted `preconditions` and `tags` default to empty arrays for compact wire mode. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
 
-- `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component or e2e. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
+- `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component, e2e, accessibility, security, performance or compatibility. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
 - `priority`: low, medium, high or critical.
 - `preconditions`: up to 100 nonempty strings.
 - `steps`: 1–500 objects containing nonempty `action` and `expected`, plus `data` (which may be empty).
@@ -3486,7 +4023,7 @@ Names, descriptions, titles, preconditions, actions and expected results are tri
 
 ~~~json testweave
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "project": "Example",
   "policy": {
     "mode": "block",
@@ -3522,6 +4059,14 @@ Names, descriptions, titles, preconditions, actions and expected results are tri
 ~~~
 
 Preserve established IDs. An upsert replaces the complete module; include every test to retain. Add failure and boundary cases for this example using [functional testing guidance](functional-testing.md). Tests describe acceptance criteria and do not imply they have been executed.
+
+## V2 profiles, fixtures and includes
+
+Optional test `profile` describes manual non-functional checks: `wcagTarget` (string), `keyboard`, `screenReader`, `session`, `inputBoundaries`, `checklist` (string arrays), `authzMatrix` (`{role, resource, access: "allow" | "deny"}[]`), `viewports` (`{width, height}[]`, positive integers), `network` (string), and `budgets` (`{metric, limit, unit}[]`, nonnegative limits). These describe acceptance targets, never measured results or execution statuses.
+
+Top-level `fixtures` maps stable identifiers to reusable nonempty strings, for example `{"standardUser":"A verified test account"}`. Reference them in preconditions or step action/data/expected using `{{fixture.standardUser}}`. Export expands references recursively; storage retains tokens. Missing references and cycles fail doctor/export. Fixtures are local authored data: do not store real credentials.
+
+Top-level `includes` lists explicit descendant contracts, for example `["packages/billing/test-truth.md"]`. Each child is a complete contract. Its source paths, docs/specs and Markdown test refs are relative to its own directory. Root policy governs the compiled workspace. Queries, exports and revision-aware drift compile all included modules. Mutations update the owning document under locks without flattening it into the root. IDs and fixture names must be globally unique. Missing/repeated includes, symlink escapes and more than 100 documents fail validation. A child module's paths must stay within its package when updated from the root. Child policies do not override root policy.
 ````
 
 ````skills/testweave/references/functional-testing.md
@@ -3924,7 +4469,7 @@ test('skill bundle installs authoritative documents with resolvable local links'
   assert.equal(await readFile(installedFile, 'utf8'), TESTWEAVE_SKILL_CONTENT);
   assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
   assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
-    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/index.md', 'commands/init.md', 'commands/mcp.md',
+    'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/import.md', 'commands/index.md', 'commands/init.md', 'commands/mcp.md',
     'commands/scan.md', 'commands/sync.md', 'commands/update.md',
     'references/contract-schema.md', 'references/functional-testing.md',
   ]);
@@ -4196,6 +4741,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { temporaryDirectory } from './helpers.js';
 import type { Diagnostic } from '../src/engine/doctor.js';
+import { TESTWEAVE_SKILL_FILES } from '../src/integrations/skills.js';
 
 const exec = promisify(execFile);
 const cliPath = fileURLToPath(new URL('../dist/cli/index.js', import.meta.url));
@@ -4223,7 +4769,8 @@ test('doctor renders aligned plain diagnostics and an accurate healthy summary',
   assert.match(human.stdout, /Workspace\s+/);
   assert.ok(human.stdout.includes(path.basename(root)));
   assert.match(human.stdout, /Node\.js runtime\s+v\d+/);
-  assert.match(human.stdout, /Skill bundle\s+11 documents/);
+  assert.match(human.stdout, new RegExp('Skill bundle\\s+' + TESTWEAVE_SKILL_FILES.length + ' documents'));
+  assert.match(human.stdout, /Contract schema\s+OK\s+Schema v2/);
   assert.match(human.stdout, /QA contract\s+OK\s+.*test-truth\.md/);
   assert.match(human.stdout, /Claude Code\s+OK\s+.*CLAUDE\.md.*\.mcp\.json.*\.claude\/skills\/testweave/);
   assert.match(human.stdout, /Pre-push hook\s+disabled in project configuration/);
@@ -5730,6 +6277,305 @@ test('interactive resolver preserves cancellation, previews drafts, maps files a
   assert.ok((await context.store.read()).modules[0]!.tests.some((entry) => entry.tags.includes('needs-review')));
   assert.equal((await context.analyzer.analyze({ base })).blocked, false);
   await assert.rejects(runSync(context, { interactive: true, prePush: true }), /TTY/);
+});
+````
+
+````tests/v080.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { mkdir, readFile, writeFile, symlink } from 'node:fs/promises';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { createTestTruth, testTruthSchema, testCaseSchema } from '../src/schema/test-truth.js';
+import { parseTestTruth, serializeTestTruth } from '../src/engine/markdown.js';
+import { compileContract, expandFixtures } from '../src/engine/includes.js';
+import { MarkdownContractStore } from '../src/engine/store.js';
+import { diagnose, repair } from '../src/engine/doctor.js';
+import { generateExport } from '../src/integrations/exporters.js';
+import { importCases, parseCsv } from '../src/integrations/importers.js';
+import { runImport } from '../src/cli/import.js';
+import { runGenerate } from '../src/cli/generate.js';
+import { createContext } from '../src/cli/context.js';
+import { contractGraph, noteName } from '../src/integrations/graph.js';
+import { ValidatedModuleAuthor } from '../src/llm/adapter.js';
+import { specPointers } from '../src/engine/specs.js';
+import { createProgram } from '../src/cli/index.js';
+import { createMcpServer } from '../src/mcp/server.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+
+test('v2 validates NFT profiles and rejects invalid metadata and execution outcomes', () => {
+  const contract = contractFixture();
+  for (const type of ['accessibility', 'security', 'performance', 'compatibility']) {
+    contract.modules[0]!.tests[0] = testCaseSchema.parse({ ...moduleFixture.tests[0], type,
+      refs: ['PROJ-123', 'docs/prd.md#ac-1'], profile: { wcagTarget: 'WCAG 2.1 AA',
+        keyboard: ['Tab reaches submit'], screenReader: ['Submit has a name'],
+        authzMatrix: [{ role: 'guest', resource: '/admin', access: 'deny' }], session: ['Expires'],
+        inputBoundaries: ['Empty input rejected'], viewports: [{ width: 390, height: 844 }], network: 'Slow 3G',
+        budgets: [{ metric: 'LCP', limit: 2500, unit: 'ms' }], checklist: ['Review definition'],
+      } });
+    assert.equal(parseTestTruth(serializeTestTruth(contract)).modules[0]!.tests[0]!.type, type);
+  }
+  assert.throws(() => testTruthSchema.parse({ ...contract, schemaVersion: 1 }), /schemaVersion 2/);
+  for (const extra of [{ status: 'passed' }, { profile: { unknown: true } }, { profile: { viewports: [{ width: -1, height: 10 }] } },
+    { profile: { budgets: [{ metric: 'LCP', limit: -1, unit: 'ms' }] } }]) {
+    assert.throws(() => testCaseSchema.parse({ ...moduleFixture.tests[0], ...extra }));
+  }
+  assert.equal(createTestTruth('new').schemaVersion, 2);
+});
+
+test('fixtures expand recursively only at export and reject missing/cyclic definitions', () => {
+  const contract = contractFixture();
+  contract.fixtures = { standardUser: 'alice', setup: 'Sign in as {{fixture.standardUser}}' };
+  contract.modules[0]!.tests[0]!.preconditions = ['{{fixture.setup}}'];
+  contract.modules[0]!.tests[0]!.steps[0]!.data = '{{fixture.standardUser}}';
+  assert.equal(expandFixtures(contract).modules[0]!.tests[0]!.preconditions[0], 'Sign in as alice');
+  assert.equal(contract.modules[0]!.tests[0]!.steps[0]!.data, '{{fixture.standardUser}}');
+  assert.match(generateExport(contract, { target: 'checklist', format: 'csv' }).content, /alice/);
+  assert.throws(() => expandFixtures({ ...contract, fixtures: {} }), /Unknown fixture/);
+  assert.throws(() => expandFixtures({ ...contract, fixtures: { setup: '{{fixture.setup}}' } }), /Cyclic fixture/);
+  assert.throws(() => expandFixtures({ ...contract, fixtures: { setup: '{{fixture.constructor}}' } }), /Unknown fixture/);
+  assert.throws(() => expandFixtures({ ...contract, fixtures: { setup: '{{fixture.standardUser}}'.repeat(100), standardUser: 'a'.repeat(1000) } }), /20,000/);
+});
+
+test('strict provider nullable NFT metadata normalizes before canonical validation', async () => {
+  const author = new ValidatedModuleAuthor({ generate: async () => ({ ...moduleFixture, docs: null, specs: null,
+    tests: [{ ...moduleFixture.tests[0], type: 'accessibility', refs: null,
+      profile: { wcagTarget: 'WCAG 2.1 AA', keyboard: null, screenReader: ['Submit is named'], budgets: null } }],
+  }) });
+  const result = await author.author({ context: 'Review keyboard and screen reader checks' });
+  assert.deepEqual(result.tests[0]!.profile, { wcagTarget: 'WCAG 2.1 AA', screenReader: ['Submit is named'] });
+  assert.equal(result.docs, undefined);
+  assert.equal(result.tests[0]!.refs, undefined);
+});
+
+test('test document refs participate in scoped spec reads and changed-since filtering', () => {
+  const contract = contractFixture();
+  contract.modules[0]!.tests[0]!.refs = ['PROJ-123', 'docs/prd.md#ac-1'];
+  assert.deepEqual(specPointers(contract, contract.modules[0]), ['docs/prd.md#ac-1']);
+  assert.equal(generateExport(contract, { target: 'checklist', format: 'csv', changedSince: 'HEAD' },
+    { changedFiles: ['docs/prd.md'] }).testCount, 1);
+});
+
+test('doctor --fix migrates v1 atomically, preserves prose, and is idempotent', async (t) => {
+  const { context, root } = await repositoryFixture(t);
+  const contract = { ...contractFixture(), schemaVersion: 1 as const };
+  const markdown = 'Before\n\n' + serializeTestTruth(contract) + '\nAfter';
+  await writeFile(path.join(root, 'test-truth.md'), markdown);
+  const checks = await diagnose(context);
+  assert.equal(checks.find((check) => check.id === 'schema-version')?.ok, false);
+  await repair(context, checks);
+  assert.equal((await context.store.read()).schemaVersion, 2);
+  assert.match(await context.store.readMarkdown(), /^Before/);
+  assert.match(await context.store.readMarkdown(), /After$/);
+  const after = await context.store.readMarkdown();
+  await context.store.migrate!();
+  assert.equal(await context.store.readMarkdown(), after);
+  await writeFile(path.join(root, 'test-truth.md.lock'), 'busy');
+  await writeFile(path.join(root, 'test-truth.md'), markdown);
+  await assert.rejects(context.store.migrate!(), /locked/);
+  assert.equal(await context.store.readMarkdown(), markdown);
+});
+
+async function splitFixture(t: Parameters<typeof temporaryDirectory>[0]) {
+  const root = await temporaryDirectory(t);
+  await mkdir(path.join(root, 'packages/auth'), { recursive: true });
+  const parent = { ...createTestTruth('Root'), includes: ['packages/auth/test-truth.md'] };
+  const child = contractFixture();
+  child.modules[0]!.specs = ['docs/auth.md#sign-in'];
+  child.modules[0]!.tests[0]!.refs = ['docs/auth.md#sign-in', 'PROJ-1'];
+  child.fixtures = { standardUser: 'alice' };
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(parent));
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), 'Child prose\n\n' + serializeTestTruth(child));
+  return { root, parent, child, store: new MarkdownContractStore(root) };
+}
+
+test('includes compile relative paths, docs and fixtures; case updates stay in the owning file', async (t) => {
+  const { root, store } = await splitFixture(t);
+  const before = await store.readMarkdown();
+  const contract = await store.read();
+  assert.deepEqual(contract.modules[0]!.paths, ['packages/auth/src/auth/**']);
+  assert.deepEqual(contract.modules[0]!.specs, ['packages/auth/docs/auth.md#sign-in']);
+  assert.deepEqual(contract.modules[0]!.tests[0]!.refs, ['packages/auth/docs/auth.md#sign-in', 'PROJ-1']);
+  assert.equal(contract.fixtures?.standardUser, 'alice');
+  await store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Changed' });
+  assert.equal(await store.readMarkdown(), before);
+  const child = await readFile(path.join(root, 'packages/auth/test-truth.md'), 'utf8');
+  assert.match(child, /^Child prose/);
+  assert.deepEqual(parseTestTruth(child).modules[0]!.paths, moduleFixture.paths);
+  assert.equal((await store.read()).modules[0]!.tests[0]!.title, 'Changed');
+  await assert.rejects(store.upsert({ ...contract.modules[0]!, paths: ['outside/**'] }), /stay inside/);
+  await assert.rejects(store.upsert({ ...moduleFixture, id: 'duplicate' }), /globally unique/);
+  await store.append([{ ...moduleFixture, id: 'root', tests: [{ ...moduleFixture.tests[0]!, id: 'ROOT-1' }] }], await store.read());
+  assert.equal(parseTestTruth(await store.readMarkdown()).modules.length, 1);
+});
+
+test('includes reject missing files, duplicate identities/fixtures, repeated includes and symlink escapes', async (t) => {
+  const { root, store, parent, child } = await splitFixture(t);
+  const childMarkdown = serializeTestTruth(child);
+  await assert.rejects(compileContract(serializeTestTruth(parent), async () => undefined), /Missing included/);
+  await assert.rejects(compileContract(serializeTestTruth({ ...parent, includes: [...parent.includes, ...parent.includes] }), async () => childMarkdown), /Repeated/);
+  await assert.rejects(compileContract(serializeTestTruth({ ...parent, modules: child.modules }), async () => childMarkdown), /Duplicate module/);
+  await assert.rejects(compileContract(serializeTestTruth({ ...parent, fixtures: child.fixtures! }), async () => childMarkdown), /Duplicate fixture/);
+  for (const include of ['../test-truth.md', '/test-truth.md', 'packages/a/test-truth.md#heading', 'a.json']) {
+    assert.throws(() => testTruthSchema.parse({ ...parent, includes: [include] }));
+  }
+  const outside = await temporaryDirectory(t);
+  await writeFile(path.join(outside, 'test-truth.md'), childMarkdown);
+  await symlink(outside, path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  await writeFile(store.file, serializeTestTruth({ ...parent, includes: ['linked/test-truth.md'] }));
+  await assert.rejects(store.read(), /outside/);
+});
+
+test('drift compares included contracts at each committed revision and the working tree', async (t) => {
+  const { context, root, git } = await repositoryFixture(t);
+  await mkdir(path.join(root, 'packages/auth/src/auth'), { recursive: true });
+  await writeFile(path.join(root, 'packages/auth/src/auth/login.ts'), 'export const login = 1;');
+  const parent = { ...createTestTruth('root'), includes: ['packages/auth/test-truth.md'] };
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(parent));
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), serializeTestTruth(contractFixture()));
+  await git.add('.'); await git.commit('Split contract');
+  const base = (await git.revparse(['HEAD'])).trim();
+  await writeFile(path.join(root, 'packages/auth/src/auth/login.ts'), 'export const login = 2;');
+  assert.equal((await context.analyzer.analyze({ base })).issues[0]?.kind, 'stale-module');
+  await context.store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Updated behavior' });
+  assert.equal((await context.analyzer.analyze({ base })).issues.length, 0);
+  await git.add('.'); await git.commit('Behavior and QA update');
+  const target = (await git.revparse(['HEAD'])).trim();
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), 'invalid working copy');
+  assert.equal((await context.analyzer.analyze({ base, target })).issues.length, 0);
+});
+
+test('graph, Mermaid, DOT, Canvas and Obsidian retain linked identities and NFT metadata', () => {
+  const contract = contractFixture();
+  contract.docs = ['docs/prd.md#login'];
+  contract.modules[0]!.tests[0]!.profile = { keyboard: ['Tab to submit'] };
+  const graph = contractGraph(contract, { auth: 'stale-module' });
+  assert.deepEqual(new Set(graph.nodes.map((node) => node.kind)), new Set(['spec', 'source', 'module', 'test']));
+  const ids = new Set(graph.nodes.map((node) => node.id));
+  assert.ok(graph.edges.every((edge) => ids.has(edge.source) && ids.has(edge.target)));
+  assert.equal(graph.nodes.find((node) => node.id === 'test:AUTH-001')?.driftStatus, 'stale-module');
+  for (const format of ['json', 'mermaid', 'dot'] as const) {
+    const result = generateExport(contract, { target: 'graph', format });
+    assert.match(result.content, /Sign in/);
+    assert.equal(result.testCount, 1);
+  }
+  const canvas = JSON.parse(generateExport(contract, { target: 'canvas', format: 'json' }).content) as { nodes: { id: string; type: string }[]; edges: { fromNode: string; toNode: string }[] };
+  assert.equal(canvas.nodes.filter((node) => node.type === 'group').length, 4);
+  assert.ok(canvas.edges.every((edge) => canvas.nodes.some((node) => node.id === edge.fromNode)));
+  const notes = generateExport(contract, { target: 'obsidian', format: 'json' }).files!;
+  assert.match(notes[`${noteName('test:AUTH-001')}.md`]!, /priority: "high"/);
+  assert.match(notes[`${noteName('test:AUTH-001')}.md`]!, /keyboard/);
+  assert.ok(Object.values(notes).some((note) => note.includes(`[[${noteName('module:auth')}]]`)));
+});
+
+test('all new QA exports filter modules, tags, priorities and changed paths, and expand fixtures', () => {
+  const contract = contractFixture();
+  contract.fixtures = { user: 'alice' };
+  contract.modules[0]!.tests[0]!.steps[0]!.data = '{{fixture.user}}';
+  contract.modules.push({ ...structuredClone(moduleFixture), id: 'other', paths: ['src/other/**'],
+    tests: [{ ...structuredClone(moduleFixture.tests[0]!), id: 'OTHER-1', tags: ['other'], priority: 'low' }] });
+  for (const target of ['testrail', 'qase', 'checklist', 'gherkin'] as const) {
+    const artifact = generateExport(contract, { target, format: 'csv', module: 'auth', tags: 'smoke', priority: 'high' });
+    assert.equal(artifact.testCount, 1);
+    assert.match(artifact.content, /alice/);
+    assert.doesNotMatch(artifact.content, /OTHER-1/);
+  }
+  assert.equal(generateExport(contract, { target: 'xray', format: 'csv', changedSince: 'HEAD' }, { changedFiles: ['src/other/file.ts'] }).testCount, 1);
+  assert.equal(generateExport(contract, { target: 'testrail', format: 'json', tags: 'missing' }).testCount, 0);
+  assert.throws(() => generateExport(contract, { target: 'graph', format: 'json', module: 'missing' }), /Unknown module/);
+  assert.throws(() => generateExport(contract, { target: 'xray', format: 'csv', changedSince: 'HEAD' }), /changed-file/);
+  assert.throws(() => generateExport(contract, { target: 'xray', format: 'dot' }), /csv or json/);
+});
+
+test('CSV importer handles quoted multiline fields and rejects malformed rows', () => {
+  assert.deepEqual(parseCsv('\uFEFF"ID","Title"\r\n"A","a, b\n""c"""\r\n'), [{ ID: 'A', Title: 'a, b\n"c"' }]);
+  for (const content of ['ID,ID\n1,2', 'ID,Title\n1', 'ID\n"oops', 'ID\n"a"x']) assert.throws(() => parseCsv(content));
+});
+
+test('legacy QA CSV and JSON exports reimport stable IDs, multiline steps and priorities', () => {
+  const contract = contractFixture();
+  contract.modules[0]!.tests[0]!.steps.push({ action: 'Second action', data: 'a,"b"\nc', expected: 'Second outcome' });
+  for (const source of ['jira', 'xray', 'zephyr', 'testrail'] as const) for (const format of ['csv', 'json'] as const) {
+    const artifact = generateExport(contract, { target: source, format, projectKey: 'QA' });
+    const cases = importCases(artifact.content, source, format);
+    assert.equal(cases.length, 1, `${source} ${format}`);
+    assert.equal(cases[0]!.id, 'AUTH-001');
+    assert.equal(cases[0]!.title, 'Sign in');
+    assert.equal(cases[0]!.priority, 'high');
+    assert.deepEqual(cases[0]!.steps, contract.modules[0]!.tests[0]!.steps, `${source} ${format}`);
+  }
+  assert.throws(() => importCases('[{"id":"A","title":"No steps"}]', 'testrail', 'json'));
+  assert.throws(() => importCases('[]', 'jira', 'json'), /no cases/);
+});
+
+test('CLI import merges atomically, rejects conflicts, preserves prose and supports idempotent reimport', async (t) => {
+  const root = await temporaryDirectory(t);
+  const context = await createContext(root, { log() {}, error() {} });
+  await context.store.initialize(createTestTruth('Imported'));
+  await writeFile(path.join(root, 'test-truth.md'), (await context.store.readMarkdown()) + '\nKeep prose');
+  await writeFile(path.join(root, 'suite.json'), generateExport(contractFixture(), { target: 'testrail', format: 'json' }).content);
+  const options = { source: 'testrail', format: 'json', module: 'auth', paths: 'src/auth/**' };
+  await runImport(context, 'suite.json', options);
+  const before = await context.store.readMarkdown();
+  await runImport(context, 'suite.json', options);
+  assert.equal(await context.store.readMarkdown(), before);
+  assert.match(before, /Keep prose/);
+  await context.store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Authored locally' });
+  const changed = await context.store.readMarkdown();
+  await assert.rejects(runImport(context, 'suite.json', options), /Existing case differs/);
+  await assert.rejects(runImport(context, '../suite.json', options), /inside/);
+  assert.equal(await context.store.readMarkdown(), changed);
+});
+
+test('CLI export filters with Git and projects/syncs notes while retaining outside prose', async (t) => {
+  const { context, root, base } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;');
+  await runGenerate(context, { target: 'checklist', changedSince: base, module: 'auth' });
+  await assert.rejects(runGenerate(context, { target: 'checklist', changedSince: 'invalid-ref' }));
+  await runGenerate(context, { target: 'obsidian', output: 'vault' });
+  const note = path.join(root, 'vault', `${noteName('test:AUTH-001')}.md`);
+  await writeFile(note, await readFile(note, 'utf8') + '\nPersonal notes');
+  await context.store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Updated title' });
+  await runGenerate(context, { target: 'obsidian', output: 'vault' });
+  assert.match(await readFile(note, 'utf8'), /Updated title/);
+  assert.match(await readFile(note, 'utf8'), /Personal notes/);
+  await writeFile(note, 'Unmanaged note');
+  await assert.rejects(runGenerate(context, { target: 'obsidian', output: 'vault' }), /unmanaged/);
+  assert.equal(await readFile(note, 'utf8'), 'Unmanaged note');
+});
+
+test('CLI registers v0.8 import and filter options and dispatches actual arguments', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = new MarkdownContractStore(root);
+  await store.initialize(createTestTruth('CLI'));
+  await writeFile(path.join(root, 'suite.json'), generateExport(contractFixture(), { target: 'testrail', format: 'json' }).content);
+  await createProgram().parseAsync(['node', 'testweave', '--cwd', root, 'import', 'suite.json', '--source', 'testrail',
+    '--format', 'json', '--module', 'auth', '--paths', 'src/auth/**']);
+  await createProgram().parseAsync(['node', 'testweave', '--cwd', root, 'generate', '--target', 'checklist', '--module', 'auth',
+    '--priority', 'high', '--tags', 'smoke', '--output', 'qa.md']);
+  assert.match(await readFile(path.join(root, 'qa.md'), 'utf8'), /\[ \] AUTH-001/);
+  assert.equal(createProgram().version(), '0.8.0');
+});
+
+test('MCP exports new targets with filters and Git changed-since context through the protocol', async (t) => {
+  const { context, root, base } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;');
+  const server = createMcpServer(context);
+  const client = new Client({ name: 'v080', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(b); await client.connect(a);
+  for (const target of ['graph', 'obsidian', 'canvas', 'checklist', 'gherkin', 'testrail', 'qase']) {
+    const result = await client.callTool({ name: 'generate_qa_export', arguments: {
+      target, format: 'json', module: 'auth', tags: 'smoke', priority: 'high', changedSince: base,
+    } });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    const artifact = JSON.parse((result.content as { text: string }[])[0]!.text) as { testCount: number };
+    assert.equal(artifact.testCount, 1);
+  }
+  const result = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'graph', changedSince: 'invalid-ref' } });
+  assert.equal(result.isError, true);
 });
 ````
 

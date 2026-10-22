@@ -9,8 +9,9 @@ import { hasIdeRules, installIdeRules } from '../integrations/ide.js';
 import picomatch from 'picomatch';
 import { listFiles } from './scan.js';
 import { readSpecSlice, specPointers } from './specs.js';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { workspacePath } from './files.js';
+import { compileContract, expandFixtures } from './includes.js';
 
 export interface Diagnostic { id: string; ok: boolean; repairable: boolean; message: string }
 export interface DoctorDependencies { root: string; git: GitRepository; store: ContractStore; cliPath?: string }
@@ -19,6 +20,13 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
   const diagnostics: Diagnostic[] = [];
   try {
     const contract = await deps.store.read();
+    expandFixtures(contract);
+    const { documents } = await compileContract(await deps.store.readMarkdown(), async (file) => {
+      return readFile(await workspacePath(deps.root, file), 'utf8');
+    });
+    diagnostics.push({ id: 'schema-version', ok: documents.every((document) => document.contract.schemaVersion === 2),
+      repairable: !!deps.store.migrate, message: documents.some((document) => document.contract.schemaVersion === 1)
+        ? 'Schema v1 contract; run doctor --fix to migrate to v2' : 'Schema v2 contracts' });
     diagnostics.push({ id: 'contract', ok: true, repairable: false, message: `Valid contract (${contract.modules.length} modules)` });
     const listed = await listFiles(deps.root, { includeExcluded: true });
     const files: string[] = [];
@@ -70,6 +78,7 @@ export async function diagnose(deps: DoctorDependencies): Promise<Diagnostic[]> 
 export async function repair(deps: DoctorDependencies, checks: Diagnostic[]): Promise<Diagnostic[]> {
   const fix = new Set(checks.filter((check) => !check.ok && check.repairable).map((check) => check.id));
   if (fix.has('contract')) await deps.store.initialize(createTestTruth(path.basename(deps.root)));
+  if (fix.has('schema-version')) await deps.store.migrate?.();
   const config = await readConfig(deps.root) ?? { version: 1, integrations: ['cursor', 'claude'], hook: true } satisfies ProjectConfig;
   if (fix.has('config')) await saveConfig(deps.root, config);
   await installIdeRules(deps.root, config.integrations.filter((integration) => fix.has(`ide:${integration}`)));

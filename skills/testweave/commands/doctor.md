@@ -10,6 +10,8 @@ The terminal report shows a diagnostics heading, aligned OK/FAIL rows with relev
 
 Doctor validates the contract, setup configuration, selected IDE rules/MCP registrations, every managed skill document, and enabled Git hook. Missing, outdated or modified command/reference files make the skill installation unhealthy.
 
+The `schema-version` diagnostic identifies v1 documents. `--fix` migrates root and included v1 contracts to v2 with validation, locking and prose preservation. Fixture references are checked for missing keys, cycles and excessive expansion; broken include graphs are reported as contract errors. Repair never invents missing fixtures or package contracts.
+
 It also reports `dead-path` for module globs matching no existing workspace files, `orphaned-module` when all of a module's paths are dead, and `dead-spec` for missing linked docs/specs or heading anchors. These are non-repairable findings: inspect and update pointers/scenarios manually. Doctor never deletes definitions to hide these problems.
 
 Registered paths in discovery-excluded folders are checked in both Git and non-Git workspaces. Non-Git checks skip Git metadata and symbolic links; scan keeps its normal discovery exclusions.

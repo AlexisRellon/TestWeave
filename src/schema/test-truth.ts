@@ -29,6 +29,10 @@ export const TEST_TYPES = [
   'interface',
   'component',
   'e2e',
+  'accessibility',
+  'security',
+  'performance',
+  'compatibility',
 ] as const;
 
 export type TestType = typeof TEST_TYPES[number];
@@ -46,6 +50,10 @@ export const TEST_TYPE_LABELS: Record<TestType, string> = {
   interface: 'Interface Testing',
   component: 'Component Testing',
   e2e: 'End-to-End Testing',
+  accessibility: 'Accessibility Testing',
+  security: 'Security Testing',
+  performance: 'Performance Testing',
+  compatibility: 'Compatibility Testing',
 };
 
 const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
@@ -94,6 +102,10 @@ const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
   'end to end': 'e2e',
   'end-to-end': 'e2e',
   'end-to-end testing': 'e2e',
+  'accessibility testing': 'accessibility',
+  'security testing': 'security',
+  'performance testing': 'performance',
+  'compatibility testing': 'compatibility',
 };
 
 export const testTypeSchema = z.preprocess((value) => {
@@ -102,6 +114,18 @@ export const testTypeSchema = z.preprocess((value) => {
   return TEST_TYPE_SYNONYMS[normalized] ?? normalized;
 }, z.enum(TEST_TYPES));
 
+export const nftProfileSchema = z.strictObject({
+  wcagTarget: text.optional(),
+  keyboard: z.array(text).max(100).optional(),
+  screenReader: z.array(text).max(100).optional(),
+  authzMatrix: z.array(z.strictObject({ role: text, resource: text, access: z.enum(['allow', 'deny']) })).max(100).optional(),
+  session: z.array(text).max(100).optional(),
+  inputBoundaries: z.array(text).max(100).optional(),
+  viewports: z.array(z.strictObject({ width: z.number().int().positive(), height: z.number().int().positive() })).max(100).optional(),
+  network: text.optional(),
+  budgets: z.array(z.strictObject({ metric: text, limit: z.number().nonnegative().finite(), unit: text })).max(100).optional(),
+  checklist: z.array(text).max(100).optional(),
+});
 const baseTestCaseSchema = z.strictObject({
   id: identifier,
   title: text,
@@ -111,6 +135,7 @@ const baseTestCaseSchema = z.strictObject({
   steps: z.array(testStepSchema).min(1).max(500),
   tags: z.array(z.string().trim().min(1).max(100)).max(100).default([]),
   refs: z.array(text).max(100).optional(),
+  profile: nftProfileSchema.optional(),
 });
 
 export const testCaseSchema = z.preprocess((input) => {
@@ -137,12 +162,20 @@ export const testModuleSchema = z.strictObject({
 export const structuredModuleSchema = testModuleSchema.extend({
   docs: z.array(specPointerSchema).max(100).nullable().optional(),
   specs: z.array(specPointerSchema).max(100).nullable().optional(),
-  tests: z.array(baseTestCaseSchema.extend({ refs: z.array(text).max(100).nullable().optional() })).min(1).max(1000),
+  tests: z.array(baseTestCaseSchema.extend({
+    refs: z.array(text).max(100).nullable().optional(),
+    profile: nftProfileSchema.extend(Object.fromEntries(
+      Object.entries(nftProfileSchema.shape).map(([key, field]) => [key, field.nullable()]),
+    )).nullable().optional(),
+  })).min(1).max(1000),
 });
 export const testTruthSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   project: text,
   docs: z.array(specPointerSchema).max(100).optional(),
+  fixtures: z.record(identifier, text).optional(),
+  includes: z.array(specPointerSchema.refine((value) => !value.includes('#') && value.endsWith('/test-truth.md'),
+    'Includes must name a subdirectory test-truth.md without an anchor')).max(100).optional(),
   policy: z.strictObject({
     mode: z.enum(['block', 'warn']),
     sourceGlobs: z.array(sourcePatternSchema).min(1).max(100),
@@ -151,6 +184,10 @@ export const testTruthSchema = z.strictObject({
   }),
   modules: z.array(testModuleSchema).max(10_000),
 }).superRefine((contract, context) => {
+  if (contract.schemaVersion === 1 && (contract.fixtures || contract.includes || contract.modules.some((module) =>
+    module.tests.some((test) => test.profile || ['accessibility', 'security', 'performance', 'compatibility'].includes(test.type))))) {
+    context.addIssue({ code: 'custom', message: 'Fixtures, includes and NFT profiles require schemaVersion 2' });
+  }
   const moduleIds = new Set<string>();
   const testIds = new Set<string>();
   for (const [moduleIndex, module] of contract.modules.entries()) {
@@ -170,7 +207,7 @@ export type TestTruth = z.infer<typeof testTruthSchema>;
 
 export function createTestTruth(project: string): TestTruth {
   return testTruthSchema.parse({
-    schemaVersion: 1, project,
+    schemaVersion: 2, project,
     policy: {
       mode: 'block',
       sourceGlobs: ['**/*.{ts,tsx,js,jsx,mjs,cjs,vue,svelte,py,go,rs,java,kt,cs,rb,php,swift,c,cpp,h,sql,sh}'],
