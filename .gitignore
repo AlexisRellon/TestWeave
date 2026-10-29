@@ -19,3 +19,9 @@ opencode.jsonc
 .agents/skills/adaptive-bugfix
 .codex/hooks.json
 docs/bug-memory
+
+.agents/skills/logo-design
+.claude/skills/logo-design
+.kiro/skills/logo-design
+.impeccable
+.kiro

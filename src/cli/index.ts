@@ -15,9 +15,11 @@ import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
 import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
+import { runDiff } from './diff.js';
+import { runUi } from './ui.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.8.0')
+  const program = new Command().name('testweave').version('1.0.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -41,6 +43,7 @@ export function createProgram(): Command {
     .option('--base <ref>', 'Compare against this Git revision instead of upstream')
     .option('--strict', 'Block on drift even in warning mode')
     .option('--json', 'Emit machine-readable report')
+    .option('--format <format>', 'text, json or github', 'text')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
     .option('--semantic', 'Ignore provably cosmetic JavaScript/TypeScript edits')
     .option('--interactive', 'Resolve drift in a TTY with reviewed local or AI drafts')
@@ -48,6 +51,13 @@ export function createProgram(): Command {
     .option('--model <model>', 'AI model for interactive drafting')
     .option('--base-url <url>', 'Custom or Ollama API endpoint')
     .action(async (options: SyncOptions) => { process.exitCode = await runSync(await context(), options); });
+  program.command('diff').description('Summarize semantic QA definition changes')
+    .option('--base <ref>', 'Compare against this Git revision (default: HEAD)')
+    .option('--format <format>', 'text, markdown, json or github', 'text')
+    .action(async (options: { base?: string; format: string }) => { await runDiff(await context(), options); });
+  program.command('ui').alias('view').description('Inspect QA definitions in a local browser viewer')
+    .option('--port <port>', 'Loopback HTTP port; 0 selects an available port', '0')
+    .action(async (options: { port: string }) => { await runUi(await context(), options); });
   program.command('scan').description('Read project context and discover existing modules, journeys and automated tests')
     .option('--context <file>', 'Read a workspace-relative project context file first')
     .option('--apply', 'Add uncovered module drafts to test-truth.md, preserving existing modules')

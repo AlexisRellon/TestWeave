@@ -1,6 +1,6 @@
 {
   "name": "testweave",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -36,6 +36,7 @@
   "files": [
     "dist",
     "skills",
+    "assets",
     "docs/mcp-providers.md",
     "README.md",
     "CHANGELOG.md",
@@ -64,7 +65,7 @@
     "simple-git": "4.0.2",
     "toml-eslint-parser": "0.10.0",
     "unified": "11.0.5",
-    "zod": "4.6.5",
+    "zod": "4.6.7",
     "typescript": "~5.9.3"
   },
   "devDependencies": {

@@ -3,6 +3,7 @@
 - [Initialize](init.md) or [update](update.md) integrations.
 - [Scan](scan.md) existing projects; review needs-review drafts.
 - [Sync](sync.md) code/spec alignment, semantic filtering and interactive resolution.
+- [Diff and viewer](review.md) semantic PR summaries and the local inspection UI.
 - [Doctor](doctor.md) configuration, dead paths and missing spec anchors.
 - [Generate](generate.md) exports and optional AI drafts.
 - [Import](import.md) legacy CSV/JSON manual QA definitions.

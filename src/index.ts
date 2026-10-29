@@ -6,6 +6,7 @@ export * from './engine/includes.js';
 export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
+export * from './engine/diff.js';
 export * from './engine/doctor.js';
 export * from './engine/queries.js';
 export * from './engine/specs.js';

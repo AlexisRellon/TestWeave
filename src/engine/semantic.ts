@@ -31,14 +31,14 @@ function fingerprint(file: string, content: string): string | undefined {
     }
     ts.forEachChild(node, collectPublicType);
   };
-  const typeText = (node: ts.TypeNode | undefined) => {
+  const typeText = (node: ts.Node | undefined) => {
     if (!node) return '';
     collectPublicType(node);
     return printer.printNode(ts.EmitHint.Unspecified, node, source);
   };
   const signature = (node: ts.SignatureDeclaration) => JSON.stringify({
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
-    returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
+    returns: typeText(node.type), typeParameters: node.typeParameters?.map(typeText),
   });
   const initializers = new Set<ts.Node>();
   const initializerTypes = (node: ts.Node): void => {
@@ -70,11 +70,14 @@ function fingerprint(file: string, content: string): string | undefined {
     if (!(ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
       ts.isTypeAliasDeclaration(statement) || ts.isVariableStatement(statement))) return undefined;
     if (ts.isFunctionDeclaration(statement)) publicTypes.push(signature(statement));
+    if (ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
+      publicTypes.push(...statement.typeParameters?.map(typeText) ?? []);
+    }
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) publicTypes.push(printer.printNode(ts.EmitHint.Unspecified, statement, source));
     if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
       if (ts.canHaveModifiers(member) && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword)) continue;
       if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) publicTypes.push(signature(member));
-      if (ts.isPropertyDeclaration(member)) publicTypes.push(typeText(member.type));
+      if (ts.isPropertyDeclaration(member)) publicTypes.push(JSON.stringify({ type: typeText(member.type), optional: !!member.questionToken }));
     }
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name)) return undefined;
@@ -90,10 +93,14 @@ function fingerprint(file: string, content: string): string | undefined {
       const symbol = checker.getShorthandAssignmentValueSymbol(node);
       if (symbol) protectedSymbols.add(symbol);
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.findAncestor(node, ts.isFunctionLike) &&
-      !(node.initializer && (ts.isFunctionExpression(node.initializer) || ts.isArrowFunction(node.initializer) || ts.isClassExpression(node.initializer)))) {
-      const symbol = checker.getSymbolAtLocation(node.name);
-      if (symbol) locals.set(symbol, `__testweave_local_${locals.size}`);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.findAncestor(node, ts.isFunctionLike)) {
+      let initializer = node.initializer;
+      while (initializer && (ts.isParenthesizedExpression(initializer) || ts.isAsExpression(initializer) ||
+        ts.isTypeAssertionExpression(initializer) || ts.isSatisfiesExpression(initializer) || ts.isNonNullExpression(initializer))) initializer = initializer.expression;
+      if (!(initializer && (ts.isFunctionExpression(initializer) || ts.isArrowFunction(initializer) || ts.isClassExpression(initializer)))) {
+        const symbol = checker.getSymbolAtLocation(node.name);
+        if (symbol) locals.set(symbol, `__testweave_local_${locals.size}`);
+      }
     }
     ts.forEachChild(node, collect);
   };

@@ -1,4 +1,9 @@
-# TestWeave
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/testweave-horizontal-dark.svg">
+    <img alt="TestWeave - Keep manual QA scenarios in step with your code" src="assets/testweave-horizontal-color.svg" width="380">
+  </picture>
+</p>
 
 <p align="center">
   <strong>Keep manual QA scenarios in step with your code.</strong>
@@ -11,7 +16,7 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node.js 20+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/AI%20Agents-79%2B%20Supported-8A2BE2" alt="79+ AI Agents" />
-  <img src="https://img.shields.io/badge/MCP-Native%20Stdio-009688" alt="MCP Server" />
+  <img src="https://img.shields.io/badge/MCP-Native%20Stdio-087F72" alt="MCP Server" />
 </p>
 
 ---
@@ -30,6 +35,8 @@ For example, changing `src/auth/login.ts` should prompt a review of login scenar
 - **Universal Package Manager Support**: Works seamlessly across **npm**, **pnpm**, **Yarn Classic**, **modern Yarn (PnP)**, and **Bun**.
 
 TestWeave checks file coverage and contract changes. A passing check establishes documentation alignment; reviewing scenario quality and executing tests remain part of your QA workflow. The core CLI, drift checks, MCP tools, and exports require no AI API key. Optional AI drafting sends supplied context to your selected provider.
+
+The v1.0 stable interface covers documented CLI commands and exit codes, the package's exported TypeScript API, MCP tools/resources, and contract schema v2. Schema v1 remains readable; use `testweave doctor --fix` for an explicit upgrade. See [release compatibility and upgrade guidance](RELEASING.md#stable-compatibility-and-upgrades).
 
 ```mermaid
 flowchart LR
@@ -168,6 +175,24 @@ npx testweave doctor --fix
 npx testweave generate --target xray --format csv --output test-cases.csv
 ```
 
+### Inspect changes and browse QA definitions locally
+
+```sh
+npx testweave diff --base origin/main --format markdown
+npx testweave sync --base origin/main --strict --format github
+npx testweave ui
+# Alias with an explicit port:
+npx testweave view --port 4317
+```
+
+`diff` summarizes semantic changes to modules, test IDs, steps, expected outcomes, NFT profiles and linked paths/specs. It compares the chosen Git revision, including package contracts, against current definitions. Supported formats are `text`, `markdown`, `json` and `github`.
+
+In GitHub Actions, `sync --format github` emits native workflow annotations and appends a combined drift and contract-diff summary to `GITHUB_STEP_SUMMARY`. Fetch your comparison revision first, for example with `actions/checkout` configured with `fetch-depth: 0`. Sync retains its existing policy and exit codes.
+
+`ui` prints the URL of a local server bound to `127.0.0.1`; the default selects an available port. Its five views provide a scenario/NFT catalog, a dedicated test-document table (`ID`, `Title`, `Preconditions`, ordered `#`/`Action`/`Data`/`Expected` step columns, `Priority`, and browser-local `Pass / Fail` and `Comment` controls), live drift and impact inspection, an interactive coverage graph, and semantic before/after changes with filtered downloads for Xray, Zephyr, Jira, TestRail, Qase, Obsidian and Markdown checklists. Workspace edits refresh the viewer. Stop the server with Ctrl+C. The viewer requires no cloud or API keys; browser-local pass/fail and comment notes stay in local storage and never modify `test-truth.md` or exports.
+
+Local notes use test IDs within the browser origin, including the port; they are not scoped to a workspace or synchronized across browsers. A different port has different storage, and reusing an origin with another project's matching IDs can show earlier notes. Clear notes before reusing that origin. If storage is unavailable, notes last only for the current page session. These controls provide personal scratch notes, not durable execution history.
+
 ---
 
 ## Package Managers
@@ -285,9 +310,11 @@ npx --no-install testweave generate --target xray --format csv --output qa/xray-
 
 Review and import the generated artifact in your QA platform. Exports contain test definitions; they do not record execution results or upload cases automatically. Omit `--output` to print to stdout. Choose a new output filename for each export because existing files are not overwritten.
 
-### Schema v2 and portable QA definitions (v0.8.0)
+### Stable schema v2 and portable QA definitions
 
 Run `testweave doctor --fix` to migrate a v1 contract. V2 adds shared string `fixtures` referenced in preconditions and steps as `{{fixture.standardUser}}`, package contract `includes` such as `packages/billing/test-truth.md`, and `accessibility`, `security`, `performance` and `compatibility` test types with optional manual check `profile` metadata. Root policy governs included packages; IDs and fixture names are globally unique. Package paths/spec pointers stay relative to the package, while scoped queries and revision-aware drift use their workspace paths. Writes preserve each owning contract and its prose.
+
+Reads and diagnosis leave v1 files unchanged. Contract updates validate under a lock and replace one owning file atomically; included files are not flattened into the root. A multi-document migration proceeds file by file, so a later failure can leave earlier files upgraded. Correct the reported problem and rerun `doctor --fix`; migration is idempotent.
 
 ```sh
 testweave generate --target testrail --format json --module authentication
@@ -301,7 +328,7 @@ testweave generate --target obsidian --output qa-vault
 testweave import qa/legacy.csv --source xray --module authentication --paths 'src/auth/**'
 ```
 
-TestRail/Qase JSON is a portable definition bundle; CSV columns can be mapped in destination importers. Graph also supports DOT. Obsidian projection creates linked notes with YAML metadata and stable hashed filenames; subsequent exports refresh managed content while retaining outside prose. Removed notes are retained to protect personal annotations. Drift metadata is `unknown` without a Git baseline and never indicates test execution. Imports support Jira, Xray, Zephyr and TestRail CSV/JSON layouts, reject conflicting IDs, and merge under the contract lock. See the [schema guide](skills/testweave/references/contract-schema.md), [export guide](skills/testweave/commands/generate.md) and [import guide](skills/testweave/commands/import.md) for exact fields and supported layouts.
+TestRail/Qase JSON is a portable definition bundle; CSV columns can be mapped in destination importers. Graph also supports DOT. Obsidian projection creates linked notes with YAML metadata and stable hashed filenames; subsequent exports refresh managed content while retaining outside prose. Removed notes are retained to protect personal annotations. Drift metadata is `unknown` without a Git baseline and never indicates test execution. Imports support the documented Jira, Xray, Zephyr and TestRail CSV/JSON layouts, reject conflicting IDs, and merge under the contract lock. Vendor editions and customized exports can differ; inspect the supported fields before importing. See the [schema guide](skills/testweave/references/contract-schema.md), [export guide](skills/testweave/commands/generate.md) and [import guide](skills/testweave/commands/import.md) for exact fields and supported layouts.
 
 ## Workspace files
 

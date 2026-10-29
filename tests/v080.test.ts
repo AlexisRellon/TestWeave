@@ -55,6 +55,17 @@ test('fixtures expand recursively only at export and reject missing/cyclic defin
   assert.throws(() => expandFixtures({ ...contract, fixtures: { setup: '{{fixture.standardUser}}'.repeat(100), standardUser: 'a'.repeat(1000) } }), /20,000/);
 });
 
+test('repository QA definitions export without unresolved fixture references', async () => {
+  const contract = parseTestTruth(await readFile(new URL('../test-truth.md', import.meta.url), 'utf8'));
+  const count = contract.modules.reduce((total, module) => total + module.tests.length, 0);
+  assert.ok(count > 0);
+  for (const target of ['xray', 'zephyr', 'jira', 'testrail', 'qase', 'obsidian', 'checklist'] as const) {
+    const artifact = generateExport(contract, { target, format: 'json', projectKey: 'QA' });
+    assert.equal(artifact.testCount, count, target);
+    assert.ok(artifact.content.length > 0, target);
+  }
+});
+
 test('strict provider nullable NFT metadata normalizes before canonical validation', async () => {
   const author = new ValidatedModuleAuthor({ generate: async () => ({ ...moduleFixture, docs: null, specs: null,
     tests: [{ ...moduleFixture.tests[0], type: 'accessibility', refs: null,
@@ -272,7 +283,7 @@ test('CLI registers v0.8 import and filter options and dispatches actual argumen
   await createProgram().parseAsync(['node', 'testweave', '--cwd', root, 'generate', '--target', 'checklist', '--module', 'auth',
     '--priority', 'high', '--tags', 'smoke', '--output', 'qa.md']);
   assert.match(await readFile(path.join(root, 'qa.md'), 'utf8'), /\[ \] AUTH-001/);
-  assert.equal(createProgram().version(), '0.8.0');
+  assert.equal(createProgram().version(), '1.0.0');
 });
 
 test('MCP exports new targets with filters and Git changed-since context through the protocol', async (t) => {

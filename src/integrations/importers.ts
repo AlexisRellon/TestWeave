@@ -99,12 +99,14 @@ export function importCases(content: string, source: 'jira' | 'xray' | 'zephyr' 
       const rawPriority = typeof row.priority === 'object' && row.priority ? field(record(row.priority), 'name') : field(row, 'priority', 'Priority', 'priorityName');
       const priority = ({ '1': 'low', '2': 'medium', '3': 'high', '4': 'critical', highest: 'critical', normal: 'medium' } as Record<string, string>)[rawPriority.toLowerCase()] ?? (rawPriority.toLowerCase() || 'medium');
       const preconditions = row.preconditions ?? row.Preconditions ?? row.Precondition ?? row.precondition ?? row.custom_preconds;
+      const labels = row.tags ?? row.Labels ?? row.labels ?? row.Tags;
+      const jiraCsvLabels = source === 'jira' && format === 'csv' && row.tags === undefined && typeof (row.Labels ?? row.labels) === 'string';
       const type = field(row, 'type', 'Type', 'testtype', 'Test Type') || 'regression';
       const refs = typeof row.Refs === 'string' ? JSON.parse(row.Refs) as unknown : row.refs;
       const profile = typeof row.Profile === 'string' ? JSON.parse(row.Profile) as unknown : row.profile;
       tests.set(id, testCaseSchema.parse({ id, title, priority, type: type === 'Manual' ? 'regression' : type,
         preconditions: preconditions === undefined ? described.preconditions : Array.isArray(preconditions) ? preconditions : String(preconditions).split('\n').filter(Boolean),
-        steps, tags: strings(row.tags ?? row.Labels ?? row.labels ?? row.Tags),
+        steps, tags: jiraCsvLabels ? String(labels).trim().split(/\s+/).filter(Boolean) : strings(labels),
         ...(refs ? { refs } : {}), ...(profile ? { profile } : {}),
       }));
     }

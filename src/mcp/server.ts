@@ -23,7 +23,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.8.0' });
+  const server = new McpServer({ name: 'testweave', version: '1.0.0' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
