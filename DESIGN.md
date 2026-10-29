@@ -27,7 +27,7 @@ The complete offline stylesheet is exported as `viewerStyles` from `src/ui/style
 | Active navigation | `#102C2A` | Selected top tab pill |
 | Focus | `#087F72` | 3px visible focus ring |
 
-Semantic labels accompany status colors. Green is reserved strictly for healthy results and passes. The selected graph node is dark with white text; related nodes are pale blue. Non-matching graph search nodes are visually distinct via a subdued slate surface and muted borders while preserving text contrast and readability. Before/after diff surfaces use pale coral and blue with explicit labels.
+Semantic labels accompany status colors. Green is reserved strictly for healthy results and passes. The selected graph node is dark with white text; related nodes use the teal-soft `#e2f1ee` surface. Non-matching graph search nodes are visually distinct via a subdued slate surface and muted borders while preserving text contrast and readability. Before/after diff surfaces use pale coral and blue with explicit labels.
 
 ## Typography and shape
 
@@ -47,7 +47,7 @@ The five views remain scenario catalog, test document, live drift, coverage grap
 
 Primary filters expose the search input alone in `.filter-primary`. Native `<details id="secondary-filters" class="advanced-filters">` contains the `.filter-advanced` grid (module, priority, assessment, test type, catalog kind, tags, fixture and spec). On desktop (min-width 601px), secondary filters default to open; on mobile (max-width 600px), they start collapsed via matchMedia disclosure to ensure real scenario content appears in the first viewport.
 
-The catalog has a 260–340px scenario sidebar and flexible white detail panel. Selected scenarios use a subtle `#e4ecfa` background and `#aec0df` border with `aria-pressed="true"`, avoiding thick inset stripes. List and detail retain independent 74vh scrolling on desktop; mobile caps list height at 280px so details remain reachable.
+The catalog has a 260–340px scenario sidebar and flexible white detail panel. Selected scenarios use a subtle `#e2f1ee` background and `#7bbdb3` border with `aria-pressed="true"`, avoiding thick inset stripes. List and detail retain independent 74vh scrolling on desktop; mobile caps list height at 280px so details remain reachable.
 
 Ordered steps form a vertical flow: numbered circular markers connected by a fine rule, action headings, compact monospace data blocks and readable expected outcomes without nested card boxes. Local assessment and comment controls form a separate panel with an explicit storage disclaimer.
 
@@ -61,7 +61,7 @@ Use two rounded panels for drift/diagnostics and impact preview. Healthy diagnos
 
 ### Graph
 
-The graph is a scrollable pale workspace beside a white detail panel. Rounded 220px nodes retain variable-height measured placement and collision-free positioning. Smooth SVG Bézier curves connect relationships; selection is dark, related nodes blue, and non-matching search nodes distinct via subtle slate surface without opacity loss. Selection reveal scrolls the local canvas when a selected node is outside view on narrow viewports.
+The graph is a scrollable pale workspace beside a white detail panel. Rounded 220px nodes retain variable-height measured placement and collision-free positioning. Smooth SVG Bézier curves connect relationships; selection is dark, related nodes use the teal-soft `#e2f1ee` surface, and non-matching search nodes are distinct via subtle slate surface without opacity loss. Selection reveal scrolls the local canvas when a selected node is outside view on narrow viewports.
 
 ### Semantic diff
 
@@ -72,6 +72,6 @@ Each change uses a rounded white panel with identifier heading and paired before
 - At 980px and below, catalog, drift and graph panels stack and secondary filters use two columns.
 - At 600px and below, the rail is hidden to eliminate duplicate chrome; the header becomes compact; search is single-column; secondary filters collapse into disclosure; first scenario appears at under 650px from top (well within 852px viewport); all interactive controls (buttons, inputs, selects, links, disclosure summaries, neighbors) meet the 44px minimum touch target standard.
 - Contain page-wide overflow. Tables and graph canvases retain intentional local scrolling; text and metadata wrap safely.
-- Preserve skip navigation, native details behavior, visible focus (3px `#315fa8`), live regions, labels, table semantics, local storage isolation, two-step note clearing and keyboard shortcuts (`/`, `j`, `k`).
+- Preserve skip navigation, native details behavior, visible focus (3px `#087F72`), live regions, labels, table semantics, local storage isolation, two-step note clearing and keyboard shortcuts (`/`, `j`, `k`).
 - Honor reduced-motion preferences. Forced-colors mode provides explicit selection outlines.
 - Workspace content remains text, never injected HTML. Local notes never mutate definitions or exports. Visual changes must not alter server security, real data, canonical exports or hash state.

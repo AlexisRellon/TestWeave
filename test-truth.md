@@ -231,6 +231,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Change a scenario outcome, NFT profile and module pointer; compare all diff formats. Run sync with GitHub output both locally and with a step summary file. Try invalid formats and refs.",
               "data": "testweave diff --base HEAD --format text|markdown|json|github; testweave sync --base HEAD --strict --format github; GITHUB_STEP_SUMMARY",
               "expected": "Diff reports stable module/test IDs with before/after changes and no formatting noise. GitHub sync emits escaped workflow annotations, appends a combined drift and definition summary and retains ordinary policy/exit codes. Invalid input fails clearly without altering the contract. ui and view start the same loopback viewer, print its URL, validate ports and stop cleanly on Ctrl+C."
+            },
+            {
+              "action": "Inspect sync --help and compare the supported output formats",
+              "data": "testweave sync --help; --format text|markdown|json|github",
+              "expected": "Help lists all four supported output formats, including markdown; the default remains text."
             }
           ],
           "tags": [

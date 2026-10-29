@@ -43,7 +43,7 @@ export function createProgram(): Command {
     .option('--base <ref>', 'Compare against this Git revision instead of upstream')
     .option('--strict', 'Block on drift even in warning mode')
     .option('--json', 'Emit machine-readable report')
-    .option('--format <format>', 'text, json or github', 'text')
+    .option('--format <format>', 'text, markdown, json or github', 'text')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
     .option('--semantic', 'Ignore provably cosmetic JavaScript/TypeScript edits')
     .option('--interactive', 'Resolve drift in a TTY with reviewed local or AI drafts')
