@@ -22,6 +22,6 @@ The final CSP and dependency repairs passed all five manager checks and the pack
 
 ## Release gates and limits
 
-The required remote matrix passed for the implementation commit as recorded above. CodeRabbit CLI was unavailable; reviews here were source and cross-worker reviews. Tagging, merging and publication require a separate instruction.
+The required remote matrix passed for the implementation commit as recorded above. CodeRabbit CLI 0.9.0 is available through WSL; its completed review of the committed release against `main` found one minor stale MCP version in QA case ENG-011, corrected to 1.0.0. Source and cross-worker reviews also found no blocking issues. Tagging, merging and publication require a separate instruction.
 
 Schema v2 is current and v1 remains readable. Migration is explicit and atomic per owning file, with no include-tree rollback guarantee. Browser notes are origin/port and test-ID scoped, not workspace scoped; unavailable storage falls back to page memory. Browser checks cover Chromium at two widths; storage failures are exercised by the VM regression. Importers accept documented local definition layouts; external vendor services were not tested.

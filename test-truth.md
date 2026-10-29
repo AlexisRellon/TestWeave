@@ -784,7 +784,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Compare contracts with reordered keys, modules, test IDs and set-like fields, then change ordered steps, expected outcomes, profiles, fixtures, policy and linked paths/specs. Repeat with added/deleted modules and package includes.",
               "data": "Current and Git base test-truth.md plus packages/*/test-truth.md; unborn repository; explicit invalid baseline",
-              "expected": "Semantic reports ignore serialization and identity-list ordering while retaining meaningful before/after values, added/removed IDs and ordered step changes. Both snapshots compile their own includes and paths. A default comparison before the first commit uses an empty baseline; explicit invalid revisions fail. Source semantic filtering and strict provider schema boundaries remain unchanged. MCP reports package version 0.9.0."
+              "expected": "Semantic reports ignore serialization and identity-list ordering while retaining meaningful before/after values, added/removed IDs and ordered step changes. Both snapshots compile their own includes and paths. A default comparison before the first commit uses an empty baseline; explicit invalid revisions fail. Source semantic filtering and strict provider schema boundaries remain unchanged. MCP reports package version 1.0.0."
             }
           ],
           "tags": [
