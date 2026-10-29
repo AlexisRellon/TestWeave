@@ -14,10 +14,14 @@ This candidate consolidates the unpublished v0.9 viewer/review work, branding an
 - Compatibility coverage includes byte-preserving v1 reads/diagnosis, explicit idempotent migration, included contracts, IDs/prose/local paths, held locks, malformed documents and atomic replacement failure/retry.
 - Existing import, semantic-signature, revision-context, bounded-glob and annotation-storage regressions remain covered. Workers cross-reviewed compatibility and packaging changes without blocking findings.
 
-The final CSP and dependency repairs passed all five manager checks and the packaged browser check with `NODE_ENV` unset. The tested `testweave-1.0.0.tgz` SHA256 is `1006f0c8ad2fccb8c8b801ae2d5a9df14b43a3db46c9682c63ad43b44b39cafa`. `npm audit --omit=dev` reports zero findings. Remote CI remains pending for the release PR.
+The final CSP and dependency repairs passed all five manager checks and the packaged browser check with `NODE_ENV` unset. The tested `testweave-1.0.0.tgz` SHA256 is `1006f0c8ad2fccb8c8b801ae2d5a9df14b43a3db46c9682c63ad43b44b39cafa`. `npm audit --omit=dev` reports zero findings.
+
+## Remote evidence
+
+[Release PR #31](https://github.com/AlexisRellon/TestWeave/pull/31), implementation commit `b3a9e5810f548407bd984cb9ec0fde33cbb480f6`, passed [CI run 40888696320](https://github.com/AlexisRellon/TestWeave/actions/runs/40888696320): all nine test lanes (Ubuntu 24.04, Ubuntu 26.04 and Windows, each with Node 20/22/24), all fifteen installation lanes (the same OS runners with five managers), repository checks and `CI required`. Socket project/report alerts and Snyk also passed. Later documentation-only commits retain their own PR checks.
 
 ## Release gates and limits
 
-The existing GitHub Actions matrix must pass for Ubuntu 24.04, Ubuntu 26.04 and Windows with Node 20/22/24, plus all five package managers on each OS runner. Local Windows checks do not establish those remote results. CodeRabbit CLI was unavailable; reviews here were source and cross-worker reviews.
+The required remote matrix passed for the implementation commit as recorded above. CodeRabbit CLI was unavailable; reviews here were source and cross-worker reviews. Tagging, merging and publication require a separate instruction.
 
 Schema v2 is current and v1 remains readable. Migration is explicit and atomic per owning file, with no include-tree rollback guarantee. Browser notes are origin/port and test-ID scoped, not workspace scoped; unavailable storage falls back to page memory. Browser checks cover Chromium at two widths; storage failures are exercised by the VM regression. Importers accept documented local definition layouts; external vendor services were not tested.

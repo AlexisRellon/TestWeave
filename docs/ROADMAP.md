@@ -114,7 +114,7 @@ Do all heavy parsing locally in Node.js (`src/engine/`) for **0 LLM tokens** and
 - [x] Synchronize the shared **79+ AI agent skill bundle** (`skills/testweave/SKILL.md`, `commands/*.md`, `references/*.md`) with the token-optimized MCP workflow, SDD `specs` slicing, and new CLI commands.
 - [x] Consolidate release documentation and audited fixes into v1.0.0 while preserving published history through v0.8.0.
 - [x] Complete local cross-package-manager verification (`npm`, `pnpm`, `yarn-classic`, `yarn-pnp`, `bun`) against the final v1.0.0 tarball on Windows; see [release verification](release-v1.0.0.md).
-- [ ] Pass the required remote Node/OS and package-manager CI matrix before release acceptance and publication.
+- [x] Pass the required remote Node/OS and package-manager CI matrix: [release PR CI](https://github.com/AlexisRellon/TestWeave/actions/runs/40888696320) passed all nine test lanes, fifteen installation lanes and `CI required`.
 
 ---
 
