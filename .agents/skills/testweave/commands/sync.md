@@ -3,9 +3,12 @@
 ```sh
 testweave sync
 testweave sync --base origin/main --strict --json
+testweave sync --base origin/main --strict --format github
 ```
 
 Use an available repository revision for `--base`. Without it, working-tree checks require a resolvable upstream. `--strict` blocks drift even under warning policy; `--json` returns a structured report.
+
+`--format github` emits workflow annotations and combines drift with semantic contract changes in a Markdown summary, appending to `GITHUB_STEP_SUMMARY` when available. See [review guidance](review.md).
 
 Every changed tracked source file needs module coverage. An existing affected module needs changes to its description or test content; renaming it, editing paths or reordering tests does not clear stale documentation. Review whether the updated scenarios describe the actual behavior change.
 

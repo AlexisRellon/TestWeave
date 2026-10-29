@@ -1,8 +1,8 @@
 import picomatch from 'picomatch';
-import { sourcePatternSchema, type TestTruth } from '../schema/test-truth.js';
+import { sourcePatternSchema, specPointerSchema, type TestTruth } from '../schema/test-truth.js';
 import { listFiles, literalGlob } from './scan.js';
 import { createGitRepository } from './git.js';
-import { readSpecSlice, sectionBounds, specFile, specPointers } from './specs.js';
+import { readSpecSlice, sectionBounds, sliceMarkdown, specFile, specPointers } from './specs.js';
 
 /** Keep only diff lines inside a referenced section, on the revision each line belongs to. */
 export function scopedSpecDiff(diff: string, pointer: string, before: string | undefined, after: string): string {
@@ -68,10 +68,20 @@ function segmentsOverlap(left: string, right: string): boolean {
   return true;
 }
 function globsOverlap(left: string[], right: string[]): boolean {
-  if (!left.length || !right.length) return [...left, ...right].every((segment) => segment === '**');
-  if (left[0] === '**') return globsOverlap(left.slice(1), right) || globsOverlap(left, right.slice(1));
-  if (right[0] === '**') return globsOverlap(left, right.slice(1)) || globsOverlap(left.slice(1), right);
-  return segmentsOverlap(left[0]!, right[0]!) && globsOverlap(left.slice(1), right.slice(1));
+  const memo = new Map<number, boolean>();
+  const overlap = (i: number, j: number): boolean => {
+    const key = i * (right.length + 1) + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    const result = i === left.length || j === right.length
+      ? left.slice(i).every((segment) => segment === '**') && right.slice(j).every((segment) => segment === '**')
+      : left[i] === '**' ? overlap(i + 1, j) || overlap(i, j + 1)
+      : right[j] === '**' ? overlap(i, j + 1) || overlap(i + 1, j)
+      : segmentsOverlap(left[i]!, right[j]!) && overlap(i + 1, j + 1);
+    memo.set(key, result);
+    return result;
+  };
+  return overlap(0, 0);
 }
 
 export function contractIndex(contract: TestTruth) {
@@ -85,20 +95,27 @@ export function modulesForFiles(contract: TestTruth, paths: string[]) {
 export async function specContext(root: string, contract: TestTruth, pathOrModuleId: string, base?: string, target?: string) {
   const module = contract.modules.find((entry) => entry.id === pathOrModuleId);
   const pointers = module ? specPointers(contract, module) : [pathOrModuleId];
-  const sections = await Promise.all(pointers.map(async (pointer) => ({ pointer, content: await readSpecSlice(root, pointer) })));
   const git = createGitRepository(root);
+  const to = target ? await git.resolve(target) : undefined;
+  const sections = await Promise.all(pointers.map(async (pointer) => {
+    if (!to) return { pointer, content: await readSpecSlice(root, pointer) };
+    specPointerSchema.parse(pointer);
+    const content = await git.readFile!(specFile(pointer), to);
+    if (content === undefined) throw new Error(`Missing spec: ${pointer}`);
+    if (Buffer.byteLength(content, 'utf8') > 1_000_000) throw new Error(`Spec must be a file no larger than 1 MB: ${pointer}`);
+    return { pointer, content: sliceMarkdown(content, pointer) };
+  }));
   let diff = '';
   // Non-Git workspaces still support deterministic section reads.
   try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
   const from = base ?? await git.resolve('HEAD').catch(() => git.emptyTree());
-  diff = await git.diffForPaths!(module?.paths ?? [], from, target);
-  const to = target ? await git.resolve(target) : undefined;
+  diff = await git.diffForPaths!(module?.paths ?? [], from, to);
   for (const pointer of pointers) {
     const file = specFile(pointer);
     let before: string | undefined;
     try { before = await git.readFile!(file, from); } catch { /* New repository/document. */ }
     const after = to ? await git.readFile!(file, to) ?? '' : await git.readFile!(file) ?? '';
-    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, target), pointer, before, after);
+    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, to), pointer, before, after);
   }
   return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
 }

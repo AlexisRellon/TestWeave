@@ -5,7 +5,7 @@ Generated from the working files with `npm run bundle:source`.
 ````package.json
 {
   "name": "testweave",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "description": "Keep manual QA contracts aligned with source changes through CLI, Git hooks, and MCP.",
   "type": "module",
   "license": "MIT",
@@ -41,6 +41,7 @@ Generated from the working files with `npm run bundle:source`.
   "files": [
     "dist",
     "skills",
+    "assets",
     "docs/mcp-providers.md",
     "README.md",
     "CHANGELOG.md",
@@ -69,7 +70,7 @@ Generated from the working files with `npm run bundle:source`.
     "simple-git": "4.0.2",
     "toml-eslint-parser": "0.10.0",
     "unified": "11.0.5",
-    "zod": "4.6.5",
+    "zod": "4.6.7",
     "typescript": "~5.9.3"
   },
   "devDependencies": {
@@ -159,6 +160,12 @@ opencode.jsonc
 .agents/skills/adaptive-bugfix
 .codex/hooks.json
 docs/bug-memory
+
+.agents/skills/logo-design
+.claude/skills/logo-design
+.kiro/skills/logo-design
+.impeccable
+.kiro
 ````
 
 ````src/cli/agent-selector.ts
@@ -474,6 +481,52 @@ export async function createContext(directory: string, output: Output = console)
 }
 ````
 
+````src/cli/diff.ts
+import type { CliContext } from './context.js';
+import { appendFile } from 'node:fs/promises';
+import { compileContract } from '../engine/includes.js';
+import { diffContracts, type ContractDiffReport } from '../engine/diff.js';
+import { formatContractDiff } from './format-diff.js';
+
+export type DiffFormat = 'text' | 'markdown' | 'json' | 'github';
+export interface DiffOptions { base?: string; format?: string }
+
+// Sync already resolves refs, including the empty tree used for a first push.
+export async function loadContractDiffSnapshots(context: CliContext, base: string, target?: string): Promise<ContractDiffReport> {
+  const snapshot = async (ref?: string) => {
+    const markdown = ref ? await context.git.readContract(ref) : await context.store.readMarkdown();
+    if (markdown === undefined) return undefined;
+    return (await compileContract(markdown, async (file) => {
+      if (!context.git.readFile) throw new Error('Git adapter must support readFile for included contracts');
+      return context.git.readFile(file, ref);
+    })).contract;
+  };
+  const [before, after] = await Promise.all([snapshot(base), snapshot(target)]);
+  return diffContracts(before, after, base, target ?? 'working-tree');
+}
+
+export async function loadContractDiff(context: CliContext, base?: string, target?: string): Promise<ContractDiffReport> {
+  let resolved: string;
+  if (base !== undefined) resolved = await context.git.resolve(base);
+  else {
+    try { resolved = await context.git.resolve('HEAD'); }
+    catch { resolved = await context.git.emptyTree(); }
+  }
+  return loadContractDiffSnapshots(context, resolved, target ? await context.git.resolve(target) : undefined);
+}
+
+export async function runDiff(context: CliContext, options: DiffOptions = {}): Promise<number> {
+  const format = options.format ?? 'text';
+  if (!['text', 'markdown', 'json', 'github'].includes(format)) throw new Error(`Unsupported diff format: ${format}`);
+  const report = await loadContractDiff(context, options.base);
+  context.output.log(formatContractDiff(report, format as DiffFormat));
+  if (format === 'github' && process.env.GITHUB_STEP_SUMMARY) {
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, `${formatContractDiff(report, 'markdown')}\n\n`, 'utf8');
+  }
+  return 0;
+}
+````
+
 ````src/cli/doctor.ts
 import pc from 'picocolors';
 import path from 'node:path';
@@ -575,6 +628,51 @@ function printSummary(checks: Diagnostic[], log: (message: string) => void): voi
   log('  ' + pc.red(failed.length + (failed.length === 1 ? ' check needs' : ' checks need') + ' attention.'));
   if (failed.some((check) => check.repairable)) log('  Run testweave doctor --fix to repair supported problems.');
   if (failed.some((check) => !check.repairable)) log('  Some problems require manual repair; inspect the diagnostics above.');
+}
+````
+
+````src/cli/format-diff.ts
+import type { ContractDiffChange, ContractDiffReport, SemanticValue } from '../engine/diff.js';
+import type { DriftReport } from '../engine/drift.js';
+import type { DiffFormat } from './diff.js';
+
+export function markdownCell(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\|/g, '&#124;').replace(/`/g, '&#96;').replace(/\[/g, '&#91;').replace(/\]/g, '&#93;')
+    .replace(/\*/g, '&#42;').replace(/_/g, '&#95;').replace(/[\r\n]+/g, '<br>');
+}
+function annotationData(value: string): string {
+  return value.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+}
+export function githubAnnotation(level: 'error' | 'warning' | 'notice', file: string, message: string): string {
+  return `::${level} file=${annotationData(file).replace(/:/g, '%3A').replace(/,/g, '%2C')}::${annotationData(message)}`;
+}
+function label(change: ContractDiffChange): string { return change.testId ?? change.moduleId ?? 'contract'; }
+function valueText(value: SemanticValue): string {
+  if (value === null) return '—';
+  if (Array.isArray(value)) return value.map((entry, index) =>
+    `${entry && typeof entry === 'object' ? `${index + 1}. ` : ''}${valueText(entry)}`).join('\n');
+  if (typeof value === 'object') return Object.entries(value).map(([key, entry]) => `${key}: ${valueText(entry)}`).join('; ');
+  return String(value);
+}
+export function formatContractDiff(report: ContractDiffReport, format: DiffFormat): string {
+  if (format === 'json') return JSON.stringify(report, null, 2);
+  if (format === 'github') return report.changes.map((change) => githubAnnotation('notice', 'test-truth.md',
+    `${change.kind} ${change.entity} ${label(change)}: ${change.field}: ${valueText(change.before)} → ${valueText(change.after)}`)).join('\n');
+  if (format === 'text') return [`Contract diff: ${report.target} against ${report.base}`,
+    ...report.changes.map((change) => `${change.kind.toUpperCase()} ${change.entity} ${label(change)} ${change.field}: ${valueText(change.before)} → ${valueText(change.after)}`),
+    ...(!report.changes.length ? ['No semantic contract changes.'] : [])].join('\n');
+  return ['### Semantic contract diff', '', `Compared ${markdownCell(report.target)} against ${markdownCell(report.base)}.`, '',
+    ...(report.changes.length ? ['| Change | Entity | ID | Field | Before | After |', '| --- | --- | --- | --- | --- | --- |',
+      ...report.changes.map((change) => `| ${change.kind} | ${change.entity} | ${markdownCell(label(change))} | ${markdownCell(change.field)} | ${markdownCell(valueText(change.before))} | ${markdownCell(valueText(change.after))} |`)] : ['No semantic contract changes.'])].join('\n');
+}
+
+export function formatDriftMarkdown(report: DriftReport): string {
+  return ['## TestWeave QA review', '', `Compared ${markdownCell(report.target)} against ${markdownCell(report.base)}.`, '',
+    `Drift status: **${report.blocked ? 'blocked' : report.issues.length ? 'warning' : 'clear'}** (${report.changedFiles.length} changed files).`, '',
+    ...(report.issues.length ? ['| Status | Module | Issue | Files |', '| --- | --- | --- | --- |',
+      ...report.issues.map((issue) => `| ${report.blocked ? 'BLOCK' : 'WARN'} | ${markdownCell(issue.moduleId ?? 'unmapped')} | ${markdownCell(`${issue.kind}: ${issue.message}`)} | ${markdownCell(issue.files.join('\n'))} |`)] : ['No QA drift detected.']),
+    ...(report.bypasses ?? []).map((bypass) => `\nBypass ${markdownCell(bypass.moduleId)} (${markdownCell(bypass.commit)}): ${markdownCell(bypass.reason)}`)].join('\n');
 }
 ````
 
@@ -709,9 +807,11 @@ import { errorMessage } from '../engine/doctor.js';
 import { runMcpConfig, runMcpInstall } from './mcp.js';
 import { impact } from '../engine/queries.js';
 import { wireJson } from '../engine/wire.js';
+import { runDiff } from './diff.js';
+import { runUi } from './ui.js';
 
 export function createProgram(): Command {
-  const program = new Command().name('testweave').version('0.8.0')
+  const program = new Command().name('testweave').version('1.0.0')
     .description('Keep manual QA contracts aligned with source code.')
     .option('--cwd <directory>', 'Workspace directory', process.cwd())
     .showHelpAfterError().exitOverride();
@@ -735,6 +835,7 @@ export function createProgram(): Command {
     .option('--base <ref>', 'Compare against this Git revision instead of upstream')
     .option('--strict', 'Block on drift even in warning mode')
     .option('--json', 'Emit machine-readable report')
+    .option('--format <format>', 'text, markdown, json or github', 'text')
     .option('--pre-push', 'Read Git pre-push updates from stdin and inspect committed snapshots')
     .option('--semantic', 'Ignore provably cosmetic JavaScript/TypeScript edits')
     .option('--interactive', 'Resolve drift in a TTY with reviewed local or AI drafts')
@@ -742,6 +843,13 @@ export function createProgram(): Command {
     .option('--model <model>', 'AI model for interactive drafting')
     .option('--base-url <url>', 'Custom or Ollama API endpoint')
     .action(async (options: SyncOptions) => { process.exitCode = await runSync(await context(), options); });
+  program.command('diff').description('Summarize semantic QA definition changes')
+    .option('--base <ref>', 'Compare against this Git revision (default: HEAD)')
+    .option('--format <format>', 'text, markdown, json or github', 'text')
+    .action(async (options: { base?: string; format: string }) => { await runDiff(await context(), options); });
+  program.command('ui').alias('view').description('Inspect QA definitions in a local browser viewer')
+    .option('--port <port>', 'Loopback HTTP port; 0 selects an available port', '0')
+    .action(async (options: { port: string }) => { await runUi(await context(), options); });
   program.command('scan').description('Read project context and discover existing modules, journeys and automated tests')
     .option('--context <file>', 'Read a workspace-relative project context file first')
     .option('--apply', 'Add uncovered module drafts to test-truth.md, preserving existing modules')
@@ -1114,12 +1222,15 @@ export async function runScan(context: CliContext, input: unknown): Promise<void
 
 ````src/cli/sync.ts
 import pc from 'picocolors';
+import { appendFile } from 'node:fs/promises';
 import type { CliContext } from './context.js';
 import type { DriftReport, AnalyzeOptions } from '../engine/drift.js';
 import { isZeroSha, parsePushUpdates } from '../engine/git.js';
 import { resolveDrift, type ResolverOptions } from './resolve.js';
+import { loadContractDiffSnapshots } from './diff.js';
+import { formatContractDiff, formatDriftMarkdown, githubAnnotation } from './format-diff.js';
 
-export interface SyncOptions extends ResolverOptions { base?: string; strict?: boolean; json?: boolean; prePush?: boolean; semantic?: boolean; interactive?: boolean }
+export interface SyncOptions extends ResolverOptions { base?: string; strict?: boolean; json?: boolean; format?: string; prePush?: boolean; semantic?: boolean; interactive?: boolean }
 export async function readStdin(stream: NodeJS.ReadableStream = process.stdin): Promise<string> {
   let input = '';
   for await (const chunk of stream) {
@@ -1129,7 +1240,9 @@ export async function readStdin(stream: NodeJS.ReadableStream = process.stdin): 
   return input;
 }
 export async function runSync(context: CliContext, options: SyncOptions, input?: string): Promise<number> {
-  if (options.interactive && (options.prePush || options.json || !process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('--interactive requires a TTY and cannot be combined with --pre-push or --json');
+  const format = options.json ? 'json' : options.format ?? 'text';
+  if (!['text', 'markdown', 'json', 'github'].includes(format)) throw new Error(`Unsupported sync format: ${format}`);
+  if (options.interactive && (options.prePush || format !== 'text' || !process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('--interactive requires a TTY and cannot be combined with --pre-push, --json or --format');
   if (!options.interactive && (options.provider || options.model || options.baseUrl)) throw new Error('Drafting options require --interactive');
   const reports: DriftReport[] = [];
   const analyzeOptions: AnalyzeOptions = { ...(options.base ? { base: options.base } : {}), ...(options.strict ? { strict: true } : {}), ...(options.semantic ? { semantic: true } : {}), ...(options.prePush ? { prePush: true } : {}) };
@@ -1150,7 +1263,21 @@ export async function runSync(context: CliContext, options: SyncOptions, input?:
     await resolveDrift(context, reports[0], options);
     reports[0] = await context.analyzer.analyze(analyzeOptions);
   }
-  if (options.json) context.output.log(JSON.stringify(options.prePush ? reports : reports[0], null, 2));
+  if (format === 'json') context.output.log(JSON.stringify(options.prePush ? reports : reports[0], null, 2));
+  else if (format === 'github' || format === 'markdown') {
+    for (const report of reports) {
+      const diff = await loadContractDiffSnapshots(context, report.base, report.target === 'working-tree' ? undefined : report.target);
+      const summary = `${formatDriftMarkdown(report)}\n\n${formatContractDiff(diff, 'markdown')}\n`;
+      if (format === 'markdown') context.output.log(summary);
+      else {
+        for (const issue of report.issues) for (const file of issue.files.length ? issue.files : ['test-truth.md']) {
+          context.output.log(githubAnnotation(report.blocked ? 'error' : 'warning', issue.kind === 'stale-spec' ? file.split('#')[0]! : file,
+            `${issue.kind} ${issue.moduleId ?? 'unmapped'}: ${issue.message}`));
+        }
+        if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`, 'utf8');
+      }
+    }
+  }
   else for (const report of reports) {
     context.output.log(`Compared ${report.target} against ${report.base}: ${report.changedFiles.length} changed files`);
     if (!report.issues.length) context.output.log(pc.green('No QA drift detected.'));
@@ -1161,6 +1288,31 @@ export async function runSync(context: CliContext, options: SyncOptions, input?:
     }
   }
   return reports.some((report) => report.blocked) ? 1 : 0;
+}
+````
+
+````src/cli/ui.ts
+import type { CliContext } from './context.js';
+import { startUi } from '../ui/server.js';
+
+export interface RunUiOptions { port?: number | string }
+
+export async function runUi(context: CliContext, options: RunUiOptions = {}): Promise<void> {
+  if (typeof options.port === 'string' && !/^\d+$/.test(options.port)) throw new Error('Port must be an integer from 0 to 65535');
+  const viewer = await startUi(context, { port: options.port === undefined ? 0 : Number(options.port) });
+  context.output.log(`TestWeave viewer: ${viewer.url}`);
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+      viewer.server.off('error', fail);
+    };
+    const stop = () => { cleanup(); void viewer.close().then(resolve, reject); };
+    const fail = (error: Error) => { cleanup(); void viewer.close().then(() => reject(error), reject); };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    viewer.server.once('error', fail);
+  });
 }
 ````
 
@@ -1206,6 +1358,75 @@ export function auditedBypasses(issues: DriftIssue[], commits: CommitChange[]): 
     return false;
   });
   return { issues: remaining, bypasses };
+}
+````
+
+````src/engine/diff.ts
+import { testTruthSchema, type TestTruth } from '../schema/test-truth.js';
+
+export type SemanticValue = string | number | boolean | null | SemanticValue[] | { [key: string]: SemanticValue };
+export interface ContractDiffChange {
+  kind: 'added' | 'removed' | 'modified';
+  entity: 'contract' | 'module' | 'test';
+  moduleId?: string;
+  testId?: string;
+  field: string;
+  before: SemanticValue;
+  after: SemanticValue;
+}
+export interface ContractDiffReport { base: string; target: string; changes: ContractDiffChange[] }
+
+// Steps are sequential; the remaining contract arrays describe unordered memberships/checks.
+function canonical(value: unknown, field = ''): SemanticValue {
+  if (Array.isArray(value)) {
+    const entries = value.map((entry) => canonical(entry));
+    return field === 'steps' ? entries : entries.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  }
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+    .sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry, key)] as const)
+    .filter(([, entry]) => entry !== undefined && !(Array.isArray(entry) && !entry.length) &&
+      !(entry && typeof entry === 'object' && !Array.isArray(entry) && !Object.keys(entry).length))
+    );
+  return value as SemanticValue;
+}
+function record(value: object): Record<string, SemanticValue> { return canonical(value) as Record<string, SemanticValue>; }
+
+export function diffContracts(before: TestTruth | undefined, after: TestTruth | undefined,
+  base = 'base', target = 'working-tree'): ContractDiffReport {
+  const previous = before && testTruthSchema.parse(before);
+  const current = after && testTruthSchema.parse(after);
+  const changes: ContractDiffChange[] = [];
+  const compare = (old: Record<string, SemanticValue>, next: Record<string, SemanticValue>,
+    identity: Pick<ContractDiffChange, 'entity' | 'moduleId' | 'testId'>) => {
+    for (const field of [...new Set([...Object.keys(old), ...Object.keys(next)])].sort()) {
+      const left = old[field] ?? null;
+      const right = next[field] ?? null;
+      if (JSON.stringify(left) !== JSON.stringify(right)) changes.push({ ...identity, kind: 'modified', field, before: left, after: right });
+    }
+  };
+  const metadata = (contract: TestTruth | undefined) => {
+    if (!contract) return {};
+    const { modules: _modules, includes: _includes, schemaVersion: _version, ...rest } = contract;
+    return record({ ...rest, policy: { ...rest.policy, docDriftMode: rest.policy.docDriftMode ?? 'warn' } });
+  };
+  compare(metadata(previous), metadata(current), { entity: 'contract' });
+  const modules = (contract: TestTruth | undefined) => new Map(contract?.modules.map((module) => {
+    const { tests: _tests, ...rest } = module;
+    return [module.id, record(rest)] as const;
+  }));
+  const tests = (contract: TestTruth | undefined) => new Map(contract?.modules.flatMap((module) =>
+    module.tests.map((test) => [test.id, record({ ...test, moduleId: module.id })] as const)));
+  for (const [entity, old, next] of [['module', modules(previous), modules(current)], ['test', tests(previous), tests(current)]] as const) {
+    for (const id of [...new Set([...old.keys(), ...next.keys()])].sort()) {
+      const left = old.get(id);
+      const right = next.get(id);
+      const identity = entity === 'module' ? { entity, moduleId: id } :
+        { entity, moduleId: String((right ?? left)!.moduleId), testId: id };
+      if (!left || !right) changes.push({ ...identity, kind: left ? 'removed' : 'added', field: entity, before: left ?? null, after: right ?? null });
+      else compare(left, right, identity);
+    }
+  }
+  return { base, target, changes };
 }
 ````
 
@@ -1730,10 +1951,10 @@ export function replaceContractBlock(markdown: string, value: TestTruth): string
 
 ````src/engine/queries.ts
 import picomatch from 'picomatch';
-import { sourcePatternSchema, type TestTruth } from '../schema/test-truth.js';
+import { sourcePatternSchema, specPointerSchema, type TestTruth } from '../schema/test-truth.js';
 import { listFiles, literalGlob } from './scan.js';
 import { createGitRepository } from './git.js';
-import { readSpecSlice, sectionBounds, specFile, specPointers } from './specs.js';
+import { readSpecSlice, sectionBounds, sliceMarkdown, specFile, specPointers } from './specs.js';
 
 /** Keep only diff lines inside a referenced section, on the revision each line belongs to. */
 export function scopedSpecDiff(diff: string, pointer: string, before: string | undefined, after: string): string {
@@ -1799,10 +2020,20 @@ function segmentsOverlap(left: string, right: string): boolean {
   return true;
 }
 function globsOverlap(left: string[], right: string[]): boolean {
-  if (!left.length || !right.length) return [...left, ...right].every((segment) => segment === '**');
-  if (left[0] === '**') return globsOverlap(left.slice(1), right) || globsOverlap(left, right.slice(1));
-  if (right[0] === '**') return globsOverlap(left, right.slice(1)) || globsOverlap(left.slice(1), right);
-  return segmentsOverlap(left[0]!, right[0]!) && globsOverlap(left.slice(1), right.slice(1));
+  const memo = new Map<number, boolean>();
+  const overlap = (i: number, j: number): boolean => {
+    const key = i * (right.length + 1) + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    const result = i === left.length || j === right.length
+      ? left.slice(i).every((segment) => segment === '**') && right.slice(j).every((segment) => segment === '**')
+      : left[i] === '**' ? overlap(i + 1, j) || overlap(i, j + 1)
+      : right[j] === '**' ? overlap(i, j + 1) || overlap(i + 1, j)
+      : segmentsOverlap(left[i]!, right[j]!) && overlap(i + 1, j + 1);
+    memo.set(key, result);
+    return result;
+  };
+  return overlap(0, 0);
 }
 
 export function contractIndex(contract: TestTruth) {
@@ -1816,20 +2047,27 @@ export function modulesForFiles(contract: TestTruth, paths: string[]) {
 export async function specContext(root: string, contract: TestTruth, pathOrModuleId: string, base?: string, target?: string) {
   const module = contract.modules.find((entry) => entry.id === pathOrModuleId);
   const pointers = module ? specPointers(contract, module) : [pathOrModuleId];
-  const sections = await Promise.all(pointers.map(async (pointer) => ({ pointer, content: await readSpecSlice(root, pointer) })));
   const git = createGitRepository(root);
+  const to = target ? await git.resolve(target) : undefined;
+  const sections = await Promise.all(pointers.map(async (pointer) => {
+    if (!to) return { pointer, content: await readSpecSlice(root, pointer) };
+    specPointerSchema.parse(pointer);
+    const content = await git.readFile!(specFile(pointer), to);
+    if (content === undefined) throw new Error(`Missing spec: ${pointer}`);
+    if (Buffer.byteLength(content, 'utf8') > 1_000_000) throw new Error(`Spec must be a file no larger than 1 MB: ${pointer}`);
+    return { pointer, content: sliceMarkdown(content, pointer) };
+  }));
   let diff = '';
   // Non-Git workspaces still support deterministic section reads.
   try { await git.root(); } catch { return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] }; }
   const from = base ?? await git.resolve('HEAD').catch(() => git.emptyTree());
-  diff = await git.diffForPaths!(module?.paths ?? [], from, target);
-  const to = target ? await git.resolve(target) : undefined;
+  diff = await git.diffForPaths!(module?.paths ?? [], from, to);
   for (const pointer of pointers) {
     const file = specFile(pointer);
     let before: string | undefined;
     try { before = await git.readFile!(file, from); } catch { /* New repository/document. */ }
     const after = to ? await git.readFile!(file, to) ?? '' : await git.readFile!(file) ?? '';
-    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, target), pointer, before, after);
+    diff += scopedSpecDiff(await git.diffForPaths!([literalGlob(file)], from, to), pointer, before, after);
   }
   return { sections, diff, tests: module?.tests.map(({ id, title }) => ({ id, title })) ?? [] };
 }
@@ -2092,14 +2330,14 @@ function fingerprint(file: string, content: string): string | undefined {
     }
     ts.forEachChild(node, collectPublicType);
   };
-  const typeText = (node: ts.TypeNode | undefined) => {
+  const typeText = (node: ts.Node | undefined) => {
     if (!node) return '';
     collectPublicType(node);
     return printer.printNode(ts.EmitHint.Unspecified, node, source);
   };
   const signature = (node: ts.SignatureDeclaration) => JSON.stringify({
     parameters: node.parameters.map((parameter) => ({ type: typeText(parameter.type), optional: !!parameter.questionToken, rest: !!parameter.dotDotDotToken })),
-    returns: typeText(node.type), typeParameters: node.typeParameters?.map((parameter) => printer.printNode(ts.EmitHint.Unspecified, parameter, source)),
+    returns: typeText(node.type), typeParameters: node.typeParameters?.map(typeText),
   });
   const initializers = new Set<ts.Node>();
   const initializerTypes = (node: ts.Node): void => {
@@ -2131,11 +2369,14 @@ function fingerprint(file: string, content: string): string | undefined {
     if (!(ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
       ts.isTypeAliasDeclaration(statement) || ts.isVariableStatement(statement))) return undefined;
     if (ts.isFunctionDeclaration(statement)) publicTypes.push(signature(statement));
+    if (ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
+      publicTypes.push(...statement.typeParameters?.map(typeText) ?? []);
+    }
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) publicTypes.push(printer.printNode(ts.EmitHint.Unspecified, statement, source));
     if (ts.isClassDeclaration(statement)) for (const member of statement.members) {
       if (ts.canHaveModifiers(member) && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword)) continue;
       if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) publicTypes.push(signature(member));
-      if (ts.isPropertyDeclaration(member)) publicTypes.push(typeText(member.type));
+      if (ts.isPropertyDeclaration(member)) publicTypes.push(JSON.stringify({ type: typeText(member.type), optional: !!member.questionToken }));
     }
     if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name)) return undefined;
@@ -2151,10 +2392,14 @@ function fingerprint(file: string, content: string): string | undefined {
       const symbol = checker.getShorthandAssignmentValueSymbol(node);
       if (symbol) protectedSymbols.add(symbol);
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.findAncestor(node, ts.isFunctionLike) &&
-      !(node.initializer && (ts.isFunctionExpression(node.initializer) || ts.isArrowFunction(node.initializer) || ts.isClassExpression(node.initializer)))) {
-      const symbol = checker.getSymbolAtLocation(node.name);
-      if (symbol) locals.set(symbol, `__testweave_local_${locals.size}`);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.findAncestor(node, ts.isFunctionLike)) {
+      let initializer = node.initializer;
+      while (initializer && (ts.isParenthesizedExpression(initializer) || ts.isAsExpression(initializer) ||
+        ts.isTypeAssertionExpression(initializer) || ts.isSatisfiesExpression(initializer) || ts.isNonNullExpression(initializer))) initializer = initializer.expression;
+      if (!(initializer && (ts.isFunctionExpression(initializer) || ts.isArrowFunction(initializer) || ts.isClassExpression(initializer)))) {
+        const symbol = checker.getSymbolAtLocation(node.name);
+        if (symbol) locals.set(symbol, `__testweave_local_${locals.size}`);
+      }
     }
     ts.forEachChild(node, collect);
   };
@@ -2368,6 +2613,7 @@ export * from './engine/includes.js';
 export * from './engine/scan.js';
 export * from './engine/git.js';
 export * from './engine/drift.js';
+export * from './engine/diff.js';
 export * from './engine/doctor.js';
 export * from './engine/queries.js';
 export * from './engine/specs.js';
@@ -3008,12 +3254,14 @@ export function importCases(content: string, source: 'jira' | 'xray' | 'zephyr' 
       const rawPriority = typeof row.priority === 'object' && row.priority ? field(record(row.priority), 'name') : field(row, 'priority', 'Priority', 'priorityName');
       const priority = ({ '1': 'low', '2': 'medium', '3': 'high', '4': 'critical', highest: 'critical', normal: 'medium' } as Record<string, string>)[rawPriority.toLowerCase()] ?? (rawPriority.toLowerCase() || 'medium');
       const preconditions = row.preconditions ?? row.Preconditions ?? row.Precondition ?? row.precondition ?? row.custom_preconds;
+      const labels = row.tags ?? row.Labels ?? row.labels ?? row.Tags;
+      const jiraCsvLabels = source === 'jira' && format === 'csv' && row.tags === undefined && typeof (row.Labels ?? row.labels) === 'string';
       const type = field(row, 'type', 'Type', 'testtype', 'Test Type') || 'regression';
       const refs = typeof row.Refs === 'string' ? JSON.parse(row.Refs) as unknown : row.refs;
       const profile = typeof row.Profile === 'string' ? JSON.parse(row.Profile) as unknown : row.profile;
       tests.set(id, testCaseSchema.parse({ id, title, priority, type: type === 'Manual' ? 'regression' : type,
         preconditions: preconditions === undefined ? described.preconditions : Array.isArray(preconditions) ? preconditions : String(preconditions).split('\n').filter(Boolean),
-        steps, tags: strings(row.tags ?? row.Labels ?? row.labels ?? row.Tags),
+        steps, tags: jiraCsvLabels ? String(labels).trim().split(/\s+/).filter(Boolean) : strings(labels),
         ...(refs ? { refs } : {}), ...(profile ? { profile } : {}),
       }));
     }
@@ -3467,7 +3715,7 @@ async function result(action: () => Promise<unknown>, compact = false): Promise<
   }
 }
 export function createMcpServer(deps: McpDependencies): McpServer {
-  const server = new McpServer({ name: 'testweave', version: '0.8.0' });
+  const server = new McpServer({ name: 'testweave', version: '1.0.0' });
   const respond = (action: () => Promise<unknown>) => result(action, deps.compact);
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   server.registerTool('get_contract_index', {
@@ -3621,6 +3869,7 @@ const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
   uat: 'uat',
   'user acceptance': 'uat',
   'user acceptance testing': 'uat',
+  'user acceptance testing (uat)': 'uat',
   'user-acceptance': 'uat',
   'user-acceptance-testing': 'uat',
   'uat (user acceptance)': 'uat',
@@ -3761,6 +4010,1033 @@ export function createTestTruth(project: string): TestTruth {
 }
 ````
 
+````src/ui/page.ts
+import { viewerStyles } from './styles.js';
+
+/** Workspace content is rendered as text, never interpreted as HTML. */
+export const viewerPage: string = String.raw`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>TestWeave · Local viewer</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/site.webmanifest"><meta name="theme-color" content="#102C2A"><style>${viewerStyles}</style></head><body><a class="skip" href="#main">Skip to content</a>
+<div class="workspace-shell"><aside class="icon-rail" aria-label="Workspace shortcuts"><a class="rail-brand" href="#main" aria-label="TestWeave workspace"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M16 56H56L88 144L128 56H160L104 200H72Z M156 120L170 144L202 56H240L184 200H152L136 172Z"/></svg></a></aside><div class="workspace"><header class="workspace-header"><div class="brand"><img src="/assets/testweave-horizontal-color.svg" alt="TestWeave" class="brand-logo" width="121" height="28"></div><div class="connection"><span id="connection" role="status" aria-live="polite">Connecting…</span><button id="refresh" type="button">Refresh</button></div>
+<nav aria-label="Viewer sections" role="tablist"><button type="button" role="tab" id="tab-catalog" aria-controls="view-catalog" aria-selected="true" tabindex="0" data-view="catalog">Scenario catalog <span id="nav-count-catalog" class="nav-count" hidden></span></button><button type="button" role="tab" id="tab-table" aria-controls="view-table" aria-selected="false" tabindex="-1" data-view="table">Test document <span id="nav-count-table" class="nav-count" hidden></span></button><button type="button" role="tab" id="tab-drift" aria-controls="view-drift" aria-selected="false" tabindex="-1" data-view="drift">Live drift <span id="nav-count-drift" class="nav-count" hidden></span></button><button type="button" role="tab" id="tab-graph" aria-controls="view-graph" aria-selected="false" tabindex="-1" data-view="graph">Coverage graph <span id="nav-count-graph" class="nav-count" hidden></span></button><button type="button" role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1" data-view="diff">Semantic diff <span id="nav-count-diff" class="nav-count" hidden></span></button></nav>
+</header><main id="main" tabindex="-1"><div id="errors" role="alert" hidden></div><div class="intro"><div class="intro-copy"><h1 id="heading" tabindex="-1">Scenario catalog</h1><p id="description" class="muted">Inspect manual QA scenarios, steps, profiles and linked specifications.</p></div><span id="project" class="summary"></span></div>
+<section id="filters" class="filters" aria-label="Catalog filters">
+<div class="filter-primary"><label>Search<input id="search" type="search" placeholder="Find a scenario, ID or action…" aria-keyshortcuts="/"></label></div>
+<details id="secondary-filters" class="advanced-filters" open><summary>Filters</summary><div class="filter-advanced"><label>Module<select id="module"><option value="">All modules</option></select></label><label>Priority<select id="priority"><option value="">All priorities</option><option>critical</option><option>high</option><option>medium</option><option>low</option></select></label><label>Assessment<select id="assessment"><option value="">All assessments</option><option value="unassessed">Unassessed</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="commented">Commented</option></select></label><label>Test type<select id="type"><option value="">All types</option></select></label><label>Catalog<select id="kind"><option value="">Scenarios &amp; NFT</option><option value="nft">NFT profiles</option><option value="scenario">Scenarios</option></select></label><label>Tags (comma separated)<input id="tags" placeholder="smoke, authentication"></label><label>Fixture<input id="fixture" placeholder="Fixture name or reference"></label><label>Spec pointer<input id="spec" placeholder="docs/spec.md#section"></label></div></details></section>
+<div id="filter-toolbar" class="toolbar"><div class="toolbar-meta"><span id="count" class="count-status" role="status" aria-live="polite"></span><span class="shortcut-hint"><kbd>/</kbd> search · <kbd>j</kbd> <kbd>k</kbd> next or previous scenario</span></div><div class="toolbar-actions"><span id="annotation-summary" class="count-status" role="status" aria-live="polite"></span><button id="clear-annotations" type="button">Clear local notes</button><button id="reset" type="button">Clear filters</button></div></div>
+<details id="export-bar" class="export-bar" aria-label="Filtered exports"><summary class="export-summary">Export definitions</summary><p class="help">Exports use module, tags and priority from canonical definitions only. Local pass/fail notes are never exported.</p><div id="exports" class="export-links"></div></details>
+<section id="view-catalog" role="tabpanel" aria-label="Scenario catalog" aria-labelledby="tab-catalog"><div class="catalog"><div class="catalog-sidebar"><div class="panel-heading"><h2>Scenarios</h2><span class="help">Select to inspect</span></div><div id="catalog-list" class="catalog-list" aria-label="Scenarios" aria-keyshortcuts="j k"></div></div><article id="scenario-detail" class="detail" aria-label="Scenario details"></article></div></section>
+<section id="view-table" role="tabpanel" aria-label="Test document" aria-labelledby="tab-table" hidden><div class="table-wrap" role="region" aria-label="Test document table" tabindex="0"><table class="doc-table"><caption>Ordered steps with browser-local Pass/Fail and comments. Notes stay in this browser, separate from test-truth.md and exports.</caption><thead><tr><th id="th-id" scope="col" rowspan="2" class="col-id">ID</th><th id="th-title" scope="col" rowspan="2" class="col-title">Title</th><th id="th-pre" scope="col" rowspan="2" class="col-pre">Preconditions</th><th id="th-steps" scope="colgroup" colspan="4">Ordered steps</th><th id="th-priority" scope="col" rowspan="2" class="col-priority">Priority</th><th id="th-status" scope="col" rowspan="2" class="col-status">Pass / Fail</th><th id="th-comment" scope="col" rowspan="2" class="col-comment">Comment</th></tr><tr><th id="th-step-num" scope="col" class="col-step-num">#</th><th id="th-action" scope="col" class="col-action">Action</th><th id="th-data" scope="col" class="col-data">Data</th><th id="th-expected" scope="col" class="col-expected">Expected</th></tr></thead><tbody id="table-body"></tbody></table></div></section>
+<section id="view-drift" role="tabpanel" aria-label="Live drift" aria-labelledby="tab-drift" hidden><div class="columns"><div><h2>Drift issues</h2><p id="drift-status" class="drift-status"></p><div id="issues"></div><h2 class="section-gap">Workspace diagnostics &amp; dead paths</h2><div id="diagnostics"></div></div><aside class="detail"><h2>Impact preview</h2><p class="help">Find modules, scenarios and specs connected to a workspace path or glob.</p><form id="impact-form" class="impact-form"><label>Source path<input id="impact-path" required placeholder="src/auth/**" autocomplete="off"></label><button type="submit">Trace impact</button></form><div id="impact-result" role="status" aria-live="polite"></div></aside></div></section>
+<section id="view-graph" role="tabpanel" aria-label="Coverage graph" aria-labelledby="tab-graph" hidden><div class="graph-toolbar"><div class="graph-toolbar-group"><label class="graph-filter-label">Module<select id="graph-module"><option value="">All modules</option></select></label><input id="graph-search" class="graph-search-input" type="search" placeholder="Search nodes…" aria-label="Filter graph nodes"></div><div class="toolbar-actions"><label class="graph-toggle"><input id="graph-isolate" type="checkbox" checked> Focus selected only</label><button id="graph-clear-sel" type="button">Clear selection</button></div></div><div class="graph-layout"><div class="graph-scroll"><div id="graph" class="graph" aria-label="Coverage nodes and relationships"></div></div><aside id="node-detail" class="detail" aria-label="Selected coverage node"></aside></div></section>
+<section id="view-diff" role="tabpanel" aria-label="Semantic diff" aria-labelledby="tab-diff" hidden><p id="diff-status" class="muted"></p><div id="diff-content"></div></section></main><footer id="viewer-info" tabindex="-1">TestWeave · Read-only manual QA contract viewer · Canonical definitions from test-truth.md; pass/fail notes stay browser-local and are never written to contracts or exports.</footer></div></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const array = value => Array.isArray(value) ? value.filter(item => item != null) : [];
+const str = value => typeof value === 'string' ? value : value == null ? '' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+const el = (tag,text,cls) => {const node=document.createElement(tag);if(text!==undefined)node.textContent=str(text);if(cls)node.className=cls;return node;};
+const empty = (root,text) => root.append(el('p',text,'empty'));
+const values=['module','type','priority','kind','tags','fixture','spec','search','assessment'];
+const STORAGE_KEY='testweave.localAnnotations.v1';
+let state={},selectedTest='',selectedNode='',view='catalog',request=0,impactRequest=0,memoryAnnotations={},annotationsMemoryOnly=false,clearArmed=false,clearTimer=0;
+const nftTypes=['accessibility','security','performance','compatibility'];
+const modules=()=>array(state.contract&&state.contract.modules).filter(m=>m&&typeof m==='object');
+const rows=()=>modules().flatMap(module=>array(module.tests).filter(test=>test&&typeof test==='object').map(test=>({module,test})));
+function readAnnotations(){
+ if(annotationsMemoryOnly)return memoryAnnotations;
+ try{
+  if(typeof localStorage!=='undefined'&&localStorage){
+   const raw=localStorage.getItem(STORAGE_KEY);
+   if(raw){const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return parsed;}
+  }
+ }catch{}
+ return memoryAnnotations;
+}
+function writeAnnotations(next){
+ memoryAnnotations=next;
+ try{if(typeof localStorage!=='undefined'&&localStorage)localStorage.setItem(STORAGE_KEY,JSON.stringify(next));}catch{annotationsMemoryOnly=true;}
+}
+function getAnnotation(testId){
+ const all=readAnnotations(),entry=all&&typeof all==='object'?all[str(testId)]:null;
+ const status=entry&&(entry.status==='pass'||entry.status==='fail')?entry.status:'';
+ const comment=entry&&typeof entry.comment==='string'?entry.comment:'';
+ return {status,comment};
+}
+function setAnnotation(testId,patch){
+ const key=str(testId);if(!key)return;
+ const all={...readAnnotations()},current=getAnnotation(key);
+ const next={status:patch.status!==undefined?(patch.status==='pass'||patch.status==='fail'?patch.status:''):current.status,comment:patch.comment!==undefined?str(patch.comment):current.comment};
+ if(!next.status&&!next.comment)delete all[key];else all[key]=next;
+ writeAnnotations(all);
+ updateAnnotationSummary();
+}
+function clearAnnotations(){
+ memoryAnnotations={};
+ try{if(typeof localStorage!=='undefined'&&localStorage)localStorage.removeItem(STORAGE_KEY);}catch{annotationsMemoryOnly=true;}
+ renderCatalog();
+}
+function disarmClear(){
+ clearArmed=false;
+ if(clearTimer&&typeof clearTimeout==='function')clearTimeout(clearTimer);
+ clearTimer=0;
+ const button=$('clear-annotations');if(!button)return;
+ button.textContent='Clear local notes';delete button.dataset.armed;
+}
+function onClearAnnotations(){
+ const button=$('clear-annotations');if(!button)return;
+ if(!clearArmed){
+  clearArmed=true;button.textContent='Confirm clear notes?';button.dataset.armed='true';
+  if(typeof setTimeout==='function')clearTimer=setTimeout(disarmClear,4000);
+  return;
+ }
+ disarmClear();clearAnnotations();
+}
+function focusKey(node,key){if(node&&node.dataset)node.dataset.focusKey=str(key);return node;}
+function captureView(){
+ const active=typeof document!=='undefined'?document.activeElement:null;
+ const scroll=['catalog-list','scenario-detail'].map(id=>[id,$(id).scrollTop]);
+ if(!active||!active.dataset||!active.dataset.focusKey)return {scroll};
+ return {scroll,key:active.dataset.focusKey,start:active.selectionStart,end:active.selectionEnd};
+}
+function restoreView(saved){
+ if(!saved)return;
+ for(const [id,top] of saved.scroll)if(typeof top==='number')$(id).scrollTop=top;
+ if(!saved.key||typeof document.querySelectorAll!=='function')return;
+ const target=Array.from(document.querySelectorAll('[data-focus-key]')).find(node=>node.dataset.focusKey===saved.key);
+ if(!target||target===document.activeElement)return;
+ target.focus({preventScroll:true});
+ if(typeof saved.start==='number'&&typeof target.setSelectionRange==='function'){try{target.setSelectionRange(saved.start,saved.end);}catch{}}
+}
+function syncHash(){
+ if(typeof location==='undefined')return;
+ const params=new URLSearchParams({view});if(selectedTest)params.set('scenario',str(selectedTest));
+ const next='#'+params;if(location.hash===next)return;
+ if(typeof history!=='undefined'&&history.replaceState)history.replaceState(null,'',next);else location.hash=next;
+}
+function applyHash(){
+ if(typeof location==='undefined'||!location.hash)return;
+ const params=new URLSearchParams(location.hash.slice(1)),nextView=params.get('view'),scenario=params.get('scenario');
+ if(!nextView||!copy[nextView])return;
+ const changedScenario=!!scenario&&scenario!==selectedTest;
+ if(scenario)selectedTest=scenario;
+ if(nextView!==view)showView(nextView);else if(changedScenario&&state.contract)renderCatalog();
+}
+function updateAnnotationSummary(){
+ const node=$('annotation-summary');if(!node)return;
+ const all=readAnnotations();let pass=0,fail=0,commented=0;
+ for(const {test} of rows()){const a=all[str(test.id)];if(!a)continue;if(a.status==='pass')pass++;else if(a.status==='fail')fail++;if(a.comment&&str(a.comment).trim())commented++;}
+ node.textContent=(pass||fail||commented)?'Local notes: '+pass+' pass · '+fail+' fail · '+commented+' commented':'Local notes: all unassessed';
+  const clearBtn=$('clear-annotations');if(clearBtn)clearBtn.disabled=!Object.keys(all).length;
+}
+function textList(root,items,cls){const list=el('ul',undefined,cls);array(items).forEach(item=>list.append(el('li',item)));root.append(list);}
+function badge(root,text,tone){if(!text)return;const cls='badge'+(tone?' badge-'+tone:(['critical','high','medium','low'].includes(str(text))?' badge-'+str(text):''));root.append(el('span',text,cls));}
+function options(id,items,first){const select=$(id),previous=select.value;select.replaceChildren();const initial=el('option',first);initial.value='';select.append(initial);for(const [value,label] of items){const option=el('option',label);option.value=str(value);select.append(option);}if(items.some(item=>str(item[0])===previous))select.value=previous;}
+function setupFilters(){options('module',modules().map(m=>[m.id,m.name||m.id]),'All modules');options('type',[...new Set(rows().map(row=>row.test.type).filter(Boolean))].sort().map(type=>[type,type]),'All types');if($('graph-module'))options('graph-module',modules().map(m=>[m.id,m.name||m.id]),'All modules');}
+function assessmentMatches(test,annotations){
+ const wanted=$('assessment').value;if(!wanted)return true;
+ const entry=annotations[str(test.id)]||{},status=entry.status==='pass'||entry.status==='fail'?entry.status:'';
+ if(wanted==='unassessed')return !status;
+ if(wanted==='commented')return !!str(entry.comment).trim();
+ return status===wanted;
+}
+function filteredScenarios(){const annotations=readAnnotations()||{};return rows().filter(row=>matches(row)&&assessmentMatches(row.test,annotations));}
+function matches({module,test}){
+ const isNft=!!test.profile||nftTypes.includes(test.type),haystack=str(test).toLowerCase();
+ const refs=[...array(state.contract&&state.contract.docs),...array(module.docs),...array(module.specs),...array(test.refs)];
+ return (!$('module').value||module.id===$('module').value)&&(!$('type').value||test.type===$('type').value)&&(!$('priority').value||test.priority===$('priority').value)
+ &&(!$('kind').value||($('kind').value==='nft'?isNft:!isNft))
+ &&$('tags').value.split(',').map(tag=>tag.trim()).filter(Boolean).every(tag=>array(test.tags).includes(tag))
+ &&(!$('fixture').value||haystack.includes($('fixture').value.toLowerCase()))
+ &&(!$('spec').value||refs.some(ref=>str(ref).toLowerCase().includes($('spec').value.toLowerCase())))
+ &&(!$('search').value||(str(module.name)+' '+haystack).toLowerCase().includes($('search').value.toLowerCase()));
+}
+function createStatusSelect(testId,title,onChange,key){
+ const select=focusKey(el('select',undefined,'status-select'),key+'-status:'+str(testId));
+ select.setAttribute('aria-label','Assessment for '+str(testId)+' '+str(title));
+ for(const [val,label] of [['','Unassessed'],['pass','Pass'],['fail','Fail']]){const opt=el('option',label);opt.value=val;select.append(opt);}
+ select.value=getAnnotation(testId).status;
+ select.onchange=()=>{setAnnotation(testId,{status:select.value});if(onChange)onChange(select.value);};
+ return select;
+}
+function createCommentInput(testId,title,key){
+ const area=focusKey(el('textarea',undefined,'comment-input'),key+'-comment:'+str(testId));
+ area.rows=2;
+ area.placeholder='Local QA note…';
+ area.setAttribute('aria-label','Comment for '+str(testId)+' '+str(title));
+ area.value=getAnnotation(testId).comment;
+ area.oninput=()=>{setAnnotation(testId,{comment:area.value});};
+ return area;
+}
+function renderTable(filtered){
+ const body=$('table-body');if(!body)return;body.replaceChildren();
+ if(!filtered.length){
+  const tr=el('tr'),td=el('td',modules().length?'No scenarios match these filters. Try clearing a filter.':'No scenarios to display. Add definitions to test-truth.md, then refresh.','empty');
+  td.setAttribute('colspan','10');tr.append(td);body.append(tr);return;
+ }
+ let currentModule='',groupIndex=0;
+ for(const {module,test} of filtered){
+  const modId=str(module.id);
+  if(modId!==currentModule){
+   currentModule=modId;groupIndex++;
+   const groupRow=el('tr',undefined,'module-group'),groupHeader=el('th');
+   groupHeader.id='th-mod-'+groupIndex;
+   groupHeader.setAttribute('scope','colgroup');
+   groupHeader.setAttribute('colspan','10');
+   groupHeader.append(el('span',str(module.name||module.id)),el('span',str(module.id)+' · '+array(module.paths).join(', '),'meta'));
+   groupRow.append(groupHeader);body.append(groupRow);
+  }
+  const modHeaderId='th-mod-'+groupIndex,rowId='th-case-'+str(test.id).replace(/[^a-zA-Z0-9_-]/g,'_');
+  const stepsList=array(test.steps).length?array(test.steps):[{action:'No steps defined',data:'',expected:'None'}];
+  const span=stepsList.length,ann=getAnnotation(test.id);
+  const stepRows=[];
+  stepsList.forEach((step,idx)=>{
+   const tr=el('tr',undefined,ann.status?'row-'+ann.status:'');
+   stepRows.push(tr);
+   if(idx===0){
+    const idCell=el('th',test.id,'col-id');
+    idCell.id=rowId;idCell.setAttribute('scope','row');idCell.setAttribute('headers',modHeaderId+' th-id');
+    if(span>1)idCell.setAttribute('rowspan',String(span));
+    const titleCell=el('td',undefined,'col-title');
+    titleCell.setAttribute('headers',modHeaderId+' '+rowId+' th-title');
+    if(span>1)titleCell.setAttribute('rowspan',String(span));
+    titleCell.append(el('span',test.title,'cell-title'));
+    badge(titleCell,test.type);
+    for(const tag of array(test.tags))badge(titleCell,tag);
+    const preCell=el('td',undefined,'col-pre');
+    preCell.setAttribute('headers',modHeaderId+' '+rowId+' th-pre');
+    if(span>1)preCell.setAttribute('rowspan',String(span));
+    if(array(test.preconditions).length)textList(preCell,test.preconditions,'pre-list');
+    else preCell.append(el('span','None','muted'));
+    tr.append(idCell,titleCell,preCell);
+   }
+   const numCell=el('td',String(idx+1),'col-step-num');
+   numCell.setAttribute('headers',modHeaderId+' '+rowId+' th-steps th-step-num');
+   const actCell=el('td',step.action,'col-action');
+   actCell.setAttribute('headers',modHeaderId+' '+rowId+' th-steps th-action');
+   const dataCell=el('td',str(step.data)||'None','col-data');
+   dataCell.setAttribute('headers',modHeaderId+' '+rowId+' th-steps th-data');
+   const expCell=el('td',step.expected,'col-expected');
+   expCell.setAttribute('headers',modHeaderId+' '+rowId+' th-steps th-expected');
+   tr.append(numCell,actCell,dataCell,expCell);
+   if(idx===0){
+    const prioCell=el('td',undefined,'col-priority');
+    prioCell.setAttribute('headers',modHeaderId+' '+rowId+' th-priority');
+    if(span>1)prioCell.setAttribute('rowspan',String(span));
+    badge(prioCell,test.priority);
+    const statusCell=el('td',undefined,'col-status');
+    statusCell.setAttribute('headers',modHeaderId+' '+rowId+' th-status');
+    if(span>1)statusCell.setAttribute('rowspan',String(span));
+    statusCell.append(createStatusSelect(test.id,test.title,nextStatus=>{
+     stepRows.forEach(r=>{r.className=nextStatus?'row-'+nextStatus:'';});
+    },'table'));
+    const commentCell=el('td',undefined,'col-comment');
+    commentCell.setAttribute('headers',modHeaderId+' '+rowId+' th-comment');
+    if(span>1)commentCell.setAttribute('rowspan',String(span));
+    commentCell.append(createCommentInput(test.id,test.title,'table'));
+    tr.append(prioCell,statusCell,commentCell);
+   }
+   body.append(tr);
+  });
+ }
+}
+function setNavCount(name,value,alert){const node=$('nav-count-'+name);if(!node)return;const known=typeof value==='number';node.hidden=!known;node.textContent=known?String(value):'';node.className='nav-count'+(alert?' is-alert':'');}
+function focusSelectedScenario(){const active=Array.from($('catalog-list').children).find(node=>node.getAttribute&&node.getAttribute('aria-pressed')==='true');if(!active)return;active.focus();if(typeof active.scrollIntoView==='function')active.scrollIntoView({block:'nearest'});}
+function moveSelection(delta){
+ const filtered=filteredScenarios();if(!filtered.length)return;
+ const index=filtered.findIndex(row=>row.test.id===selectedTest);
+ const next=filtered[index<0?0:Math.min(filtered.length-1,Math.max(0,index+delta))];
+ selectedTest=next.test.id;renderCatalog();focusSelectedScenario();
+}
+function renderCatalog(){const saved=captureView();renderCatalogContent();restoreView(saved);syncHash();}
+function renderCatalogContent(){
+ const filtered=filteredScenarios(),list=$('catalog-list');list.replaceChildren();$('count').textContent=filtered.length+' of '+rows().length+' scenarios';
+ updateAnnotationSummary();
+ setNavCount('catalog',state.contract?filtered.length:undefined);setNavCount('table',state.contract?filtered.length:undefined);
+ if(state.contract&&!filtered.some(row=>row.test.id===selectedTest))selectedTest=filtered[0]?filtered[0].test.id:'';
+ for(const {module,test} of filtered){
+  const button=focusKey(el('button',undefined,'scenario'),'scenario:'+str(test.id)),ann=getAnnotation(test.id);
+  button.type='button';button.setAttribute('aria-pressed',String(selectedTest===test.id));
+  button.append(el('span',str(test.id)+' · '+str(module.name),'meta scenario-index'),el('strong',test.title,'scenario-title'));
+  const metadata=el('span',undefined,'scenario-footer');badge(metadata,test.priority);badge(metadata,test.type);
+  if(ann.status)badge(metadata,ann.status.toUpperCase(),ann.status);
+  button.append(metadata);
+  button.onclick=()=>{selectedTest=test.id;renderCatalog();focusSelectedScenario();};
+  list.append(button);
+ }
+ if(!filtered.length)empty(list,modules().length?'No scenarios match these filters. Try clearing a filter.':'No scenarios to display. Add definitions to test-truth.md, then refresh.');
+ const detail=$('scenario-detail');detail.replaceChildren();const row=filtered.find(row=>row.test.id===selectedTest);renderExports();renderTable(filtered);
+ if(!row){empty(detail,'Select a scenario to read its steps and expected results.');return;}
+  const {module,test}=row;const header=el('div',undefined,'detail-header');header.append(el('p',str(module.name)+' / '+str(test.id),'meta'),el('h2',test.title),el('p',module.description,'muted'));
+  const metadata=el('div',undefined,'detail-meta');for(const tag of [test.priority,test.type,...array(test.tags)])badge(metadata,tag);header.append(metadata);detail.append(header);
+ if(array(test.preconditions).length){detail.append(el('h3','Preconditions'));textList(detail,test.preconditions);}
+  detail.append(el('h3','Steps · '+array(test.steps).length,'step-heading'));
+ if(array(test.steps).length){const steps=el('ol',undefined,'steps');for(const step of array(test.steps)){const li=el('li'),data=str(step.data);li.append(el('strong',step.action));if(data)li.append(el('p','Data: '+data,'step-data'));li.append(el('p','Expected: '+str(step.expected),'step-expected'));steps.append(li);}detail.append(steps);}
+ else empty(detail,'No steps defined for this scenario.');
+ if(test.profile){detail.append(el('h2','Non-functional testing profile','section-gap'));for(const [key,value] of Object.entries(test.profile))detail.append(el('h3',key),el('pre',value));}
+ const refs=[...array(state.contract.docs),...array(module.docs),...array(module.specs),...array(test.refs)];if(refs.length){detail.append(el('h3','Specifications & references'));textList(detail,[...new Set(refs)]);}
+ const fixtures=state.contract.fixtures;if(fixtures&&Object.keys(fixtures).length){const section=el('details');section.append(el('summary','Workspace fixtures'));for(const [key,value] of Object.entries(fixtures))section.append(el('h3',key),el('pre',value));detail.append(section);}
+ const annBox=el('section',undefined,'annotation-box');annBox.setAttribute('aria-label','Browser-local assessment');
+ const statusLabel=el('label','Local assessment');statusLabel.append(createStatusSelect(test.id,test.title,()=>renderCatalog(),'detail'));
+ const commentLabel=el('label','Local comment');commentLabel.append(createCommentInput(test.id,test.title,'detail'));
+ annBox.append(statusLabel,commentLabel,el('p','Saved in browser storage for '+str(test.id)+' only. Never written to test-truth.md or exported.','annotation-note'));
+ detail.append(annBox);
+}
+function renderExports(){const root=$('exports');root.replaceChildren();for(const target of ['xray','zephyr','jira','testrail','qase','obsidian','checklist']){const params=new URLSearchParams({target,format:target==='obsidian'?'json':target==='checklist'?'markdown':'csv'});for(const name of ['module','tags','priority'])if($(name).value.trim())params.set(name,$(name).value.trim());const labels={xray:'Xray',zephyr:'Zephyr',jira:'Jira',testrail:'TestRail',qase:'Qase',obsidian:'Obsidian',checklist:'Checklist'};const link=el('a',labels[target]);link.href='/api/export?'+params;link.setAttribute('download','');root.append(link);}}
+function renderDrift(){
+ const drift=state.drift,issues=$('issues'),status=$('drift-status');issues.replaceChildren();status.textContent=drift?(drift.blocked?'Blocking drift detected.':'No blocking drift.')+' '+str(drift.base)+' → '+str(drift.target):'Drift unavailable. A Git repository with a usable comparison may be required.';
+ status.className='drift-status '+(!drift?'is-unknown':drift.blocked?'is-blocked':'is-clear');
+ const driftIssues=array(drift&&drift.issues);setNavCount('drift',drift?driftIssues.length:undefined,!!drift&&(drift.blocked||driftIssues.length>0));
+ for(const issue of driftIssues){const item=el('article',undefined,'issue');item.append(el('h3',issue.message||issue.kind));badge(item,issue.kind);if(issue.moduleId)badge(item,issue.moduleId);textList(item,issue.files);issues.append(item);}if(!issues.childNodes.length)empty(issues,drift?'No drift issues in this snapshot.':'No drift snapshot available.');
+ const diagnostics=$('diagnostics');diagnostics.replaceChildren();const ordered=array(state.diagnostics).slice().sort((a,b)=>Number(!!a.ok)-Number(!!b.ok));for(const diagnostic of ordered){const item=el('div',undefined,diagnostic.ok?'diagnostic-check is-ok':'issue is-attention');item.append(el('strong',(diagnostic.ok?'OK · ':'Attention · ')+str(diagnostic.id)),el(diagnostic.ok?'span':'p',diagnostic.message));diagnostics.append(item);}if(!diagnostics.childNodes.length)empty(diagnostics,'No workspace diagnostics available.');
+}
+function graphData(){const graph=state.graph||{};return{nodes:array(graph.nodes).filter(n=>n&&typeof n.id==='string'),edges:array(graph.edges).filter(e=>e&&typeof e.source==='string'&&typeof e.target==='string')};}
+function inspectNode(id){const root=$('graph');if(selectedNode===id){selectedNode='';if(root)root.dataset.userCleared='true';}else{selectedNode=id;if(root)delete root.dataset.userCleared;}renderGraph();if(selectedNode){const button=Array.from($('graph').children).find(node=>node.dataset.nodeId===selectedNode);if(button)button.focus({preventScroll:true});}}
+function renderGraph(){
+ const rawData=graphData(),root=$('graph'),detail=$('node-detail');root.replaceChildren();detail.replaceChildren();
+ if(!rawData.nodes.length){root.style.height='auto';setNavCount('graph',undefined);empty(root,'No coverage graph available. A valid contract is needed.');empty(detail,'Select a coverage node to inspect its relationships.');return;}
+ setNavCount('graph',rawData.nodes.length);
+ const modFilter=$('graph-module')?$('graph-module').value:'';
+ let nodes=rawData.nodes,edges=rawData.edges;
+ if(modFilter){
+  const targetMod=rawData.nodes.find(n=>n.id===modFilter||n.id==='module:'+modFilter);
+  if(targetMod){
+   const modEdges=rawData.edges.filter(e=>e.source===targetMod.id||e.target===targetMod.id);
+   const connected=new Set([targetMod.id,...modEdges.flatMap(e=>[e.source,e.target])]);
+   nodes=rawData.nodes.filter(n=>connected.has(n.id));
+   edges=modEdges;
+  }
+ }
+ const query=$('graph-search')?$('graph-search').value.trim().toLowerCase():'';
+ const matchingIds=query?new Set(nodes.filter(n=>str(n.label).toLowerCase().includes(query)||str(n.id).toLowerCase().includes(query)).map(n=>n.id)):null;
+ if(!selectedNode&&nodes.length&&!root.dataset.userCleared)selectedNode=nodes[0].id;
+ if(selectedNode&&!nodes.some(n=>n.id===selectedNode))selectedNode=nodes[0]?nodes[0].id:'';
+ const activeNode=nodes.find(n=>n.id===selectedNode);
+ const neighbors=activeNode?edges.filter(e=>e.source===selectedNode||e.target===selectedNode):[];
+ const related=new Set(neighbors.flatMap(e=>[e.source,e.target]));
+ const kinds=['spec','module','source','test'],positions=new Map();
+ const colWidth=220,colPitch=300,startX=24;
+ const moduleNodes=nodes.filter(n=>n.kind==='module');
+ const placed=new Set();
+ let currentY=55;
+ moduleNodes.forEach(mod=>{
+  const modSources=nodes.filter(n=>n.kind==='source'&&edges.some(e=>e.source===mod.id&&e.target===n.id));
+  const modTests=nodes.filter(n=>n.kind==='test'&&edges.some(e=>e.source===mod.id&&e.target===n.id));
+  const clusterCount=Math.max(1,modSources.length,modTests.length);
+  const clusterHeight=clusterCount*78;
+  positions.set(mod.id,{x:1*colPitch+startX,y:currentY+Math.max(0,Math.floor((clusterCount-1)/2)*78)});
+  placed.add(mod.id);
+  modSources.forEach((src,idx)=>{if(!placed.has(src.id)){positions.set(src.id,{x:2*colPitch+startX,y:currentY+idx*78});placed.add(src.id);}});
+  modTests.forEach((tst,idx)=>{if(!placed.has(tst.id)){positions.set(tst.id,{x:3*colPitch+startX,y:currentY+idx*78});placed.add(tst.id);}});
+  currentY+=clusterHeight+40;
+ });
+ const unplaced=nodes.filter(n=>n.kind!=='spec'&&!placed.has(n.id));
+ unplaced.forEach((node,idx)=>{
+  const col=kinds.indexOf(node.kind);
+  positions.set(node.id,{x:(col>=0?col:1)*colPitch+startX,y:currentY+idx*78});
+  placed.add(node.id);
+ });
+ if(unplaced.length)currentY+=unplaced.length*78;
+ const specPitch=86;let lastSpecY=55-specPitch,specBottom=0;
+ nodes.filter(n=>n.kind==='spec').map((spec,idx)=>{
+  const targetEdge=edges.find(e=>e.source===spec.id&&positions.has(e.target));
+  const targetPos=targetEdge?positions.get(targetEdge.target):null;
+  return {spec,desired:targetPos?targetPos.y:Infinity,idx};
+ }).sort((a,b)=>a.desired-b.desired||a.idx-b.idx).forEach(({spec,desired})=>{
+  const specY=Math.max(Number.isFinite(desired)?desired:55,lastSpecY+specPitch);
+  positions.set(spec.id,{x:0*colPitch+startX,y:specY});
+  placed.add(spec.id);lastSpecY=specY;specBottom=specY+56;
+ });
+ const height=Math.max(180,currentY+30,specBottom+30);
+ root.style.height=height+'px';
+ kinds.forEach((kind,column)=>{
+  const heading=el('span',kind==='test'?'Scenarios':kind==='spec'?'Specifications':kind==='source'?'Source paths':'Modules','graph-heading');
+  heading.style.left=(column*colPitch+startX)+'px';heading.style.top='16px';root.append(heading);
+ });
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+ svg.setAttribute('aria-hidden','true');
+ svg.setAttribute('viewBox','0 0 1168 '+height);
+ svg.setAttribute('preserveAspectRatio','none');
+ root.append(svg);
+ const isolate=!$('graph-isolate')||$('graph-isolate').checked!==false;
+ const activeEdges=activeNode?neighbors:[];
+ const activeEdgeSet=new Set(activeEdges);
+ const relatedMap=new Map();
+ for(const e of edges){
+  if(!relatedMap.has(e.source))relatedMap.set(e.source,new Set());
+  if(!relatedMap.has(e.target))relatedMap.set(e.target,new Set());
+  relatedMap.get(e.source).add(e.target);
+  relatedMap.get(e.target).add(e.source);
+ }
+ function drawEdge(edge,isActive){
+  const from=positions.get(edge.source),to=positions.get(edge.target);
+  if(!from||!to)return;
+  const path=document.createElementNS(svg.namespaceURI,'path');
+  let x1,y1,x2,y2,cx1,cx2;
+  if(from.x<to.x){
+   const siblingEdges=activeEdges.filter(e=>e.source===edge.source&&positions.get(e.target)?.x>from.x);
+   const sIdx=siblingEdges.indexOf(edge);
+   const spread=siblingEdges.length>1?-14+(sIdx/(siblingEdges.length-1))*28:0;
+   x1=from.x+from.width;
+   y1=from.y+from.height/2+(isActive?spread:0);
+   x2=to.x;
+   y2=to.y+to.height/2;
+   const dx=Math.min(100,Math.max(32,(x2-x1)*0.36));
+   cx1=x1+dx;cx2=x2-dx;
+  }else if(from.x>to.x){
+   x1=from.x;y1=from.y+from.height/2;x2=to.x+to.width;y2=to.y+to.height/2;
+   const dx=Math.min(100,Math.max(32,(x1-x2)*0.36));
+   cx1=x1-dx;cx2=x2+dx;
+  }else{
+   x1=from.x+from.width;y1=from.y+from.height/2;x2=to.x+to.width;y2=to.y+to.height/2;
+   cx1=x1+40;cx2=x2+40;
+  }
+  path.setAttribute('d','M '+x1+' '+y1+' C '+cx1+' '+y1+', '+cx2+' '+y2+', '+x2+' '+y2);
+  path.setAttribute('class','graph-edge'+(isActive?' edge-active':' edge-dimmed'));
+  path.setAttribute('data-source',edge.source);
+  path.setAttribute('data-target',edge.target);
+   path.setAttribute('stroke',isActive?'var(--graph-active, #7a91c7)':'var(--graph-line, #c7cede)');
+  path.setAttribute('stroke-width',isActive?'2.5':'1');
+  path.setAttribute('stroke-opacity',isActive?'1':activeNode?'0.08':'0.22');
+  svg.append(path);
+ }
+ const visualOrder=nodes.filter(n=>positions.has(n.id)).sort((a,b)=>{const pa=positions.get(a.id),pb=positions.get(b.id);return pa.x-pb.x||pa.y-pb.y;});
+ for(const node of visualOrder){
+  const pos=positions.get(node.id);
+  const isSelected=node.id===selectedNode;
+  const isRelated=!isSelected&&related.has(node.id);
+  const isDimmed=matchingIds&&!matchingIds.has(node.id);
+  const button=focusKey(el('button',undefined,'graph-node'+(isSelected?' selected':isRelated?' related':'')+(isDimmed?' node-dimmed':'')),'node:'+node.id);
+  button.type='button';button.style.left=pos.x+'px';button.style.top=pos.y+'px';
+  button.dataset.nodeId=node.id;button.setAttribute('aria-pressed',String(isSelected));
+  button.setAttribute('aria-label',str(node.kind)+': '+str(node.label));
+  button.append(el('strong',node.label));
+  if(node.kind==='module'){
+   const cntSources=edges.filter(e=>e.source===node.id&&e.relation==='covers').length;
+   const cntTests=edges.filter(e=>e.source===node.id&&e.relation==='defines').length;
+   if(cntSources||cntTests)button.append(el('span',cntSources+' paths · '+cntTests+' tests','meta'));
+  }else if(node.kind==='test'&&node.priority){
+   badge(button,node.priority);
+  }
+  if(node.driftStatus&&node.driftStatus!=='unknown')button.append(el('div',node.driftStatus));
+  button.onclick=()=>inspectNode(node.id);
+  button.onmouseenter=()=>{
+   if(selectedNode)return;
+   if(typeof svg.querySelectorAll==='function'){
+    svg.querySelectorAll('path').forEach(p=>{
+     if(p.dataset&&(p.dataset.source===node.id||p.dataset.target===node.id))p.classList.add('edge-hover');
+    });
+   }
+   if(typeof root.querySelectorAll==='function'){
+    root.querySelectorAll('.graph-node').forEach(b=>{
+     if(b.dataset&&b.dataset.nodeId!==node.id&&relatedMap.get(node.id)?.has(b.dataset.nodeId))b.classList.add('related-hover');
+    });
+   }
+  };
+  button.onmouseleave=()=>{
+   if(selectedNode)return;
+   if(typeof svg.querySelectorAll==='function')svg.querySelectorAll('.edge-hover').forEach(p=>p.classList.remove('edge-hover'));
+   if(typeof root.querySelectorAll==='function')root.querySelectorAll('.related-hover').forEach(b=>b.classList.remove('related-hover'));
+  };
+  root.append(button);
+ }
+ // Labels and badges determine card height; measure before spacing cards and drawing edges.
+ const columnBottoms=new Map();let measuredBottom=55;
+ for(const button of root.children){
+  const pos=positions.get(button.dataset.nodeId);if(!pos)continue;
+  pos.height=button.offsetHeight||56;pos.width=button.offsetWidth||colWidth;
+  pos.y=Math.max(pos.y,columnBottoms.get(pos.x)||55);button.style.top=pos.y+'px';
+  columnBottoms.set(pos.x,pos.y+pos.height+22);measuredBottom=Math.max(measuredBottom,pos.y+pos.height);
+ }
+ const measuredHeight=Math.max(180,measuredBottom+30);root.style.height=measuredHeight+'px';
+ svg.setAttribute('viewBox','0 0 '+(root.clientWidth||1168)+' '+measuredHeight);
+ if(!isolate){for(const edge of edges){if(!activeEdgeSet.has(edge))drawEdge(edge,false);}}
+ for(const edge of activeEdges)drawEdge(edge,true);
+ const canvas=root.parentElement,selectedPosition=positions.get(selectedNode);
+ if(view==='graph'&&canvas&&selectedPosition&&canvas.clientWidth&&canvas.clientWidth<root.clientWidth){
+  const {x,y,width,height}=selectedPosition;
+  // Reveal selection inside the diagram without scrolling the document or changing layout.
+  if(x<canvas.scrollLeft||x+width>canvas.scrollLeft+canvas.clientWidth)canvas.scrollLeft=Math.max(0,x-24);
+  if(y<canvas.scrollTop||y+height>canvas.scrollTop+canvas.clientHeight)canvas.scrollTop=Math.max(0,y-55);
+ }
+ if(!activeNode){
+  empty(detail,'Select a coverage node to inspect its definition and relationships.');
+  return;
+ }
+ detail.append(el('p',activeNode.kind,'meta'),el('h2',activeNode.label));
+ for(const value of [activeNode.type,activeNode.priority,activeNode.driftStatus,...array(activeNode.tags)])if(value!=='unknown')badge(detail,value);
+ detail.append(el('pre',activeNode.content||'No additional content.'),el('h3','Connected neighbors'));
+ for(const edge of neighbors){
+  const other=nodes.find(n=>n.id===(edge.source===selectedNode?edge.target:edge.source));
+  if(!other)continue;
+  const button=el('button',str(edge.relation)+' · '+str(other.label),'neighbor');
+  button.type='button';button.onclick=()=>inspectNode(other.id);
+  detail.append(button);
+ }
+ if(!neighbors.length)empty(detail,'No connected neighbors.');
+}
+function pretty(value){return value==null?'Not present':typeof value==='string'?value:JSON.stringify(value,null,2);}
+function renderDiff(){
+ const root=$('diff-content'),diff=state.diff;root.replaceChildren();if(!diff){setNavCount('diff',undefined);$('diff-status').textContent='Semantic diff unavailable. No Git comparison is available for this workspace.';empty(root,'Your current contract is still available in the catalog.');return;}
+ const changes=array(diff.changes);setNavCount('diff',changes.length);$('diff-status').textContent=str(diff.message||diff.reason||str(diff.base)+' → '+str(diff.target)+' · '+changes.length+' semantic changes');
+ for(const change of changes){const item=el('article',undefined,'diff-row');item.append(el('h2',[change.moduleId,change.testId,change.field].filter(Boolean).join(' / ')||change.entity||'Contract change'));badge(item,change.kind);const columns=el('div',undefined,'diff-columns');for(const side of ['before','after']){const panel=el('section',undefined,'diff-side '+side);panel.append(el('h3',side==='before'?'Before':'After'),el('pre',pretty(change[side])));columns.append(panel);}item.append(columns);root.append(item);}if(!changes.length)empty(root,diff.available===false?'No base revision available. This can happen outside Git or before the first commit.':'No semantic contract changes.');
+}
+const copy={
+ catalog:['Scenario catalog','Inspect manual QA scenarios, steps, profiles and linked specifications.'],
+ table:['Test document','Review full scenario specifications, ordered steps and browser-local pass/fail notes in a structured table.'],
+ drift:['Live drift','Inspect where tracked source files, specifications and manual checks have diverged.'],
+ graph:['Coverage graph','Trace how specifications, modules, source paths and scenarios connect.'],
+ diff:['Semantic diff','Compare contract definition changes side by side against the Git baseline.']
+};
+function showView(next){
+ if(!copy[next])return;
+ const previous=view;
+ view=next;
+ for(const name of Object.keys(copy))$('view-'+name).hidden=name!==view;
+ document.querySelectorAll('[data-view]').forEach(button=>{const active=button.dataset.view===view;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;});
+ const filterable=view==='catalog'||view==='table';
+ $('filters').hidden=!filterable;
+ if($('filter-toolbar'))$('filter-toolbar').hidden=!filterable;
+ if($('export-bar'))$('export-bar').hidden=!filterable;
+ $('heading').textContent=copy[view][0];
+ $('description').textContent=copy[view][1];
+ if(view==='graph')renderGraph();
+ if(filterable&&previous!==view&&state.contract)renderCatalog();else syncHash();
+}
+function render(){const saved=captureView();setupFilters();$('project').textContent=state.contract?str(state.contract.project)+' · '+modules().length+' modules · '+rows().length+' scenarios':'Contract unavailable';renderCatalog();renderDrift();renderGraph();renderDiff();restoreView(saved);}
+async function json(url){const response=await fetch(url,{headers:{Accept:'application/json'},cache:'no-store'});if(!response.ok){let message='Request failed ('+response.status+').';try{const payload=await response.json();message=str(payload.error||payload.message||message);}catch{}throw new Error(message);}return response.json();}
+function showErrors(messages){const root=$('errors');root.replaceChildren();root.hidden=!messages.length;root.className='notice';for(const message of messages)root.append(el('p',message));}
+async function load(){const current=++request;$('refresh').setAttribute('aria-busy','true');try{const data=await json('/api/state');if(current!==request)return;if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('The viewer received an invalid state response.');state=data;const errors=Array.isArray(data.errors)?data.errors.map(e=>typeof e==='string'?e:e?str(e.source?e.source+': '+str(e.message):e.message||e):'Unknown viewer error'):data.errors?Object.entries(data.errors).map(([key,value])=>key+': '+str(value)):[];if(data.contract&&!Array.isArray(data.contract.modules)){state.contract=null;errors.push('Contract is malformed: modules must be a list. Fix test-truth.md and refresh.');}showErrors(errors);render();$('connection').textContent='Updated '+new Date().toLocaleTimeString();}catch(error){if(current===request){showErrors([error.message+' Use Refresh to retry. The last loaded snapshot is retained.']);$('connection').textContent='Unable to refresh';}}finally{if(current===request)$('refresh').removeAttribute('aria-busy');}}
+$('refresh').onclick=load;values.forEach(id=>$(id).addEventListener('input',renderCatalog));$('reset').onclick=()=>{values.forEach(id=>$(id).value='');renderCatalog();};if($('clear-annotations'))$('clear-annotations').onclick=onClearAnnotations;if($('graph-isolate'))$('graph-isolate').onchange=()=>renderGraph();if($('graph-module'))$('graph-module').onchange=()=>renderGraph();if($('graph-search'))$('graph-search').oninput=()=>renderGraph();if($('graph-clear-sel'))$('graph-clear-sel').onclick=()=>{const root=$('graph');if(root)root.dataset.userCleared='true';selectedNode='';renderGraph();};
+document.querySelectorAll('[data-view]').forEach((button,index,buttons)=>{
+ button.onclick=()=>showView(button.dataset.view);
+ button.onkeydown=event=>{
+  const target=event.key==='ArrowRight'?(index+1)%buttons.length:event.key==='ArrowLeft'?(index+buttons.length-1)%buttons.length:event.key==='Home'?0:event.key==='End'?buttons.length-1:-1;
+  if(target<0)return;
+  event.preventDefault();
+  const next=buttons[target];
+  if(next){next.focus();showView(next.dataset.view);}
+ };
+});
+document.querySelectorAll('.icon-rail a').forEach(link=>{link.onclick=event=>{event.preventDefault();const target=$(link.getAttribute('href').slice(1));if(target)target.focus();};});
+function typingTarget(target){const tag=target&&target.tagName;return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||!!(target&&target.isContentEditable);}
+if(typeof document.addEventListener==='function')document.addEventListener('keydown',event=>{
+ if(event.defaultPrevented||event.metaKey||event.ctrlKey||event.altKey||typingTarget(event.target))return;
+ if(event.key==='/'&&(view==='catalog'||view==='table')){event.preventDefault();$('search').focus();if(typeof $('search').select==='function')$('search').select();}
+ else if((event.key==='j'||event.key==='k')&&view==='catalog'){event.preventDefault();moveSelection(event.key==='j'?1:-1);}
+});
+if(typeof window!=='undefined'&&typeof window.addEventListener==='function')window.addEventListener('hashchange',applyHash);
+if(typeof window!=='undefined'&&typeof window.matchMedia==='function'){
+ const wideFilters=window.matchMedia('(min-width: 601px)');
+ const adaptFilters=()=>{const filters=$('secondary-filters');filters.open=wideFilters.matches;if(view==='graph')renderGraph();};
+ adaptFilters();wideFilters.addEventListener('change',adaptFilters);
+}
+applyHash();
+$('impact-form').onsubmit=async event=>{event.preventDefault();const current=++impactRequest,root=$('impact-result');root.replaceChildren(el('p','Tracing impact…'));try{const result=await json('/api/impact?'+new URLSearchParams({path:$('impact-path').value.trim()}));if(current!==impactRequest)return;root.replaceChildren();const impacted=array(result.modules);root.append(el('p',impacted.length+' connected modules'));for(const module of impacted){root.append(el('h3',module.id));textList(root,array(module.tests).map(test=>str(test.id)+' · '+str(test.title)));for(const spec of array(module.specs))root.append(el('p',str(spec.pointer)+(spec.error?' · '+str(spec.error):''),'meta'));}if(!impacted.length)empty(root,'No mapped modules match this path.');}catch(error){if(current===impactRequest)root.replaceChildren(el('p',error.message,'error'));}};
+load();
+if(typeof EventSource!=='undefined'){const events=new EventSource('/events');events.addEventListener('reload',()=>load());events.addEventListener('change',()=>load());events.onmessage=()=>load();events.onopen=()=>{$('connection').textContent='Live · connected';load();};events.onerror=()=>{$('connection').textContent='Reconnecting · snapshot retained';};}
+</script>
+</body></html>`;
+````
+
+````src/ui/server.ts
+import { createServer, type ServerResponse } from 'node:http';
+import { stat, readFile } from 'node:fs/promises';
+import { simpleGit } from 'simple-git';
+import type { CliContext } from '../cli/context.js';
+import { diagnose, errorMessage } from '../engine/doctor.js';
+import { compileContract } from '../engine/includes.js';
+import { loadContractDiff } from '../cli/diff.js';
+import { workspacePath } from '../engine/files.js';
+import { listFiles } from '../engine/scan.js';
+import { specFile, specPointers } from '../engine/specs.js';
+import { impact } from '../engine/queries.js';
+import { sourcePatternSchema } from '../schema/test-truth.js';
+import { contractGraph } from '../integrations/graph.js';
+import { exportOptionsSchema, generateExport } from '../integrations/exporters.js';
+import { viewerPage } from './page.js';
+
+export interface UiOptions { port?: number; pollIntervalMs?: number }
+
+const STATIC_ASSETS: Record<string, { file: string; type: string }> = {
+  '/favicon.ico': { file: 'favicon.ico', type: 'image/x-icon' },
+  '/favicon.svg': { file: 'favicon.svg', type: 'image/svg+xml' },
+  '/apple-touch-icon.png': { file: 'apple-touch-icon.png', type: 'image/png' },
+  '/icon-192.png': { file: 'icon-192.png', type: 'image/png' },
+  '/icon-512.png': { file: 'icon-512.png', type: 'image/png' },
+  '/maskable-512.png': { file: 'maskable-512.png', type: 'image/png' },
+  '/site.webmanifest': { file: 'site.webmanifest', type: 'application/manifest+json' },
+  '/assets/testweave-horizontal-color.svg': { file: 'testweave-horizontal-color.svg', type: 'image/svg+xml' },
+  '/assets/testweave-horizontal-dark.svg': { file: 'testweave-horizontal-dark.svg', type: 'image/svg+xml' },
+  '/assets/testweave-symbol.svg': { file: 'testweave-symbol.svg', type: 'image/svg+xml' },
+  '/assets/testweave-symbol-small.svg': { file: 'testweave-symbol-small.svg', type: 'image/svg+xml' },
+  '/assets/testweave-symbol-on-dark.svg': { file: 'testweave-symbol-on-dark.svg', type: 'image/svg+xml' },
+};
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+function query(url: URL, allowed: string[], repeated: string[] = []): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of url.searchParams) {
+    if (!allowed.includes(key) || (!repeated.includes(key) && key in result) || !value || value.length > 1000 || /[\r\n\0]/.test(value)) {
+      throw new HttpError(400, 'Invalid query parameter');
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+function json(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.end(JSON.stringify(value));
+}
+
+export async function startUi(context: CliContext, options: UiOptions = {}) {
+  const port = options.port ?? 0;
+  const pollInterval = options.pollIntervalMs ?? 1000;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be an integer from 0 to 65535');
+  if (!Number.isInteger(pollInterval) || pollInterval < 10) throw new Error('Poll interval must be at least 10ms');
+  const clients = new Set<ServerResponse>();
+  const git = simpleGit({ baseDir: context.root, timeout: { block: 30_000 } });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+  let signature: string | undefined;
+  let origin = '';
+  let polling: Promise<void> | undefined;
+  let initializing: Promise<string> | undefined;
+
+  async function snapshot(): Promise<string> {
+    const files = new Set(await listFiles(context.root));
+    files.add('test-truth.md');
+    try {
+      const { contract } = await compileContract(await context.store.readMarkdown(), async (file) => {
+        files.add(file);
+        return readFile(await workspacePath(context.root, file), 'utf8');
+      });
+      for (const pointer of [...specPointers(contract), ...contract.modules.flatMap((module) => specPointers(contract, module))]) files.add(specFile(pointer));
+    } catch { /* Invalid contracts still trigger reload when their files change. */ }
+    const stamps = await Promise.all([...files].sort().map(async (file) => {
+      try {
+        const info = await stat(await workspacePath(context.root, file));
+        return [file, info.size, info.mtimeMs, info.ctimeMs];
+      } catch { return [file, 'missing']; }
+    }));
+    const status = await git.raw(['status', '--porcelain=v2', '--branch', '-z']).catch(() => 'non-git');
+    return JSON.stringify([stamps, status]);
+  }
+
+  async function poll(): Promise<void> {
+    try {
+      const next = await snapshot();
+      if (signature !== undefined && next !== signature) {
+        for (const client of clients) client.write('event: reload\ndata: {}\n\n');
+      }
+      signature = next;
+    } catch {
+      for (const client of clients) client.write('event: reload\ndata: {"error":"Workspace polling failed"}\n\n');
+    }
+  }
+
+  function schedule(): void {
+    if (closed || !clients.size || timer || polling) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      polling = poll().finally(() => { polling = undefined; schedule(); });
+    }, pollInterval);
+  }
+
+  async function state() {
+    const errors: { source: string; message: string }[] = [];
+    async function attempt<T>(source: string, read: () => Promise<T>): Promise<T | null> {
+      try { return await read(); }
+      catch (error) { errors.push({ source, message: errorMessage(error) }); return null; }
+    }
+    const [contract, drift, diagnostics] = await Promise.all([
+      attempt('contract', () => context.store.read()),
+      attempt('drift', async () => {
+        await context.git.root();
+        const unborn = await context.git.resolve('HEAD').then(() => false, () => true);
+        return context.analyzer.analyze(unborn ? { emptyBase: true } : { base: 'HEAD' });
+      }),
+      attempt('diagnostics', () => diagnose(context)),
+    ]);
+    const statuses = Object.fromEntries(drift?.issues.filter((issue) => issue.moduleId).map((issue) => [issue.moduleId!, issue.kind]) ?? []);
+    const graph = contract ? contractGraph(contract, statuses) : null;
+    const diff = contract ? await attempt('diff', () => loadContractDiff(context)) : null;
+    return { contract, drift, diagnostics, graph, diff, errors };
+  }
+
+  const server = createServer((request, response) => {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    void (async () => {
+      if (request.headers.host !== new URL(origin).host ||
+        (request.headers.origin !== undefined && request.headers.origin !== origin) ||
+        (request.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(String(request.headers['sec-fetch-site'])))) {
+        throw new HttpError(403, 'Only same-origin loopback requests are allowed');
+      }
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET');
+        throw new HttpError(405, 'Viewer is read-only');
+      }
+      const raw = request.url ?? '';
+      if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('#') || raw.includes('\\') || /%(?![a-fA-F0-9]{2})/.test(raw)) throw new HttpError(400, 'Malformed URL');
+      let url: URL;
+      try { decodeURI(raw); url = new URL(raw, origin); }
+      catch { throw new HttpError(400, 'Malformed URL'); }
+      if (url.origin !== origin) throw new HttpError(400, 'Malformed URL');
+      if (url.pathname === '/') {
+        query(url, []);
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.end(viewerPage);
+      } else if (url.pathname in STATIC_ASSETS) {
+        query(url, []);
+        const asset = STATIC_ASSETS[url.pathname]!;
+        const content = await readFile(new URL(`../../assets/${asset.file}`, import.meta.url));
+        response.writeHead(200, { 'Content-Type': asset.type });
+        response.end(content);
+      } else if (url.pathname === '/api/state') {
+        query(url, []);
+        json(response, 200, await state());
+      } else if (url.pathname === '/api/impact') {
+        query(url, ['path'], ['path']);
+        const paths = url.searchParams.getAll('path');
+        if (!paths.length || paths.length > 100 || paths.some((file) => !sourcePatternSchema.safeParse(file).success)) throw new HttpError(400, 'Provide valid workspace-relative paths');
+        json(response, 200, await impact(context.root, await context.store.read(), paths));
+      } else if (url.pathname === '/api/export') {
+        const input = query(url, ['target', 'format', 'module', 'tags', 'priority', 'projectKey']);
+        if (!input.target || !['xray', 'zephyr', 'jira', 'testrail', 'qase', 'obsidian', 'checklist'].includes(input.target)) throw new HttpError(400, 'Invalid export target');
+        const parsed = exportOptionsSchema.safeParse(input);
+        if (!parsed.success) throw new HttpError(400, 'Invalid export options');
+        if (['jira', 'xray', 'zephyr'].includes(input.target) && parsed.data.format === 'json' && !parsed.data.projectKey) throw new HttpError(400, 'Jira, Xray and Zephyr JSON require projectKey');
+        const contract = await context.store.read();
+        if (input.module && !contract.modules.some((module) => module.id === input.module)) throw new HttpError(400, 'Unknown module');
+        if (input.tags && !input.tags.split(',').some((tag) => tag.trim())) throw new HttpError(400, 'Provide at least one tag');
+        if (!['obsidian', 'checklist'].includes(input.target) && !['csv', 'json'].includes(parsed.data.format)) throw new HttpError(400, 'QA suite exports require csv or json');
+        const artifact = generateExport(contract, parsed.data);
+        response.writeHead(200, { 'Content-Type': artifact.mimeType + '; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${artifact.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}"` });
+        response.end(artifact.content);
+      } else if (url.pathname === '/events') {
+        query(url, []);
+        if (!clients.size) {
+          if (polling) await polling;
+          else signature = await (initializing ??= snapshot().finally(() => { initializing = undefined; }));
+        }
+        if (closed || response.destroyed) return;
+        response.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        response.write('event: ready\ndata: {}\n\n');
+        clients.add(response);
+        schedule();
+        response.on('close', () => {
+          clients.delete(response);
+          if (!clients.size) { clearTimeout(timer); timer = undefined; }
+        });
+      } else throw new HttpError(404, 'Not found');
+    })().catch((error: unknown) => {
+      if (!response.headersSent && !response.destroyed) json(response, error instanceof HttpError ? error.status : 500,
+        { error: error instanceof HttpError ? error.message : 'Unable to read workspace' });
+      else response.end();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Unable to determine viewer address');
+  origin = new URL(`http://127.0.0.1:${address.port}`).origin;
+  let closing: Promise<void> | undefined;
+  function close(): Promise<void> {
+    return closing ??= new Promise<void>((resolve, reject) => {
+      closed = true;
+      clearTimeout(timer);
+      for (const client of clients) client.end();
+      clients.clear();
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeAllConnections();
+    }).then(async () => { await Promise.allSettled([polling, initializing]); });
+  }
+  return { server, url: origin, close };
+}
+````
+
+````src/ui/styles.ts
+/** Self-contained viewer theme; no network fonts or assets. */
+export const viewerStyles: string = String.raw`
+:root{--paper:#F5F7F2;--panel:#fff;--surface:#edf2ed;--surface-2:#e2eae3;--ink:#102C2A;--muted:#4e6360;--line:#dae3dc;--line-strong:#b2c4b7;--teal:#087F72;--teal-soft:#e2f1ee;--blue:#087F72;--blue-soft:#e2f1ee;--green:#1b6354;--green-soft:#e4f2ee;--amber:#855217;--amber-soft:#fff1dd;--red:#a33e43;--red-soft:#fcebed;--focus:#087F72;--mint:#65DEC0;--sans:'Segoe UI Variable Text','Segoe UI',-apple-system,BlinkMacSystemFont,Arial,sans-serif;--mono:ui-monospace,'Cascadia Code',Consolas,monospace;--p-density:1}
+:root{--graph-active:#087F72;--graph-line:#9ac2b9}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+::selection{background:#c2e8e1;color:var(--ink)}
+a{color:var(--blue);text-underline-offset:3px;text-decoration-thickness:1px}
+button,input,select,textarea{font:inherit;color:inherit}
+button,a,input,select,textarea{touch-action:manipulation}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+button{cursor:pointer;border:1px solid var(--line-strong);background:var(--panel);padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;line-height:1.35;min-height:38px}
+button:hover:not(:disabled){background:var(--blue-soft);border-color:#7ab8ae}
+button:disabled{color:var(--muted);background:var(--surface);border-color:var(--line);opacity:1;cursor:not-allowed}
+#clear-annotations[data-armed]{background:var(--red-soft);border-color:var(--red);color:var(--red)}
+input,select,textarea{width:100%;background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;min-height:38px;padding:8px 10px;font-size:13px;caret-color:var(--blue)}
+textarea{resize:vertical}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
+input[type=checkbox]{accent-color:var(--blue)}
+.skip{position:absolute;left:12px;top:-80px;padding:10px 16px;background:var(--panel);border:1px solid var(--focus);z-index:20;border-radius:12px}
+.skip:focus{top:10px}
+.workspace-shell{display:grid;grid-template-columns:68px minmax(0,1fr);max-width:1900px;margin:0 auto;min-height:100vh}
+.workspace{min-width:0}
+.icon-rail{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 8px;z-index:5}
+.icon-rail .rail-brand{display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:#102C2A;color:#65DEC0;border:1px solid #102C2A;border-radius:12px;text-decoration:none}
+.icon-rail svg{width:22px;height:22px;flex-shrink:0}
+.icon-rail .rail-brand:hover{background:#163b38;border-color:#163b38}
+.workspace-header{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:18px;padding:20px 28px 12px 12px}
+.brand{font-size:21px;font-weight:650;letter-spacing:-.035em;white-space:nowrap;color:var(--ink);display:flex;align-items:center;line-height:1}
+.brand-logo{height:28px;width:auto;display:block;max-width:130px}
+.connection{font:12px/1.4 var(--sans);color:var(--muted);display:flex;align-items:center;gap:12px;justify-content:flex-end}
+nav[role=tablist],.top-nav{display:flex;align-items:center;justify-content:center;gap:6px;padding:0;overflow-x:auto;scrollbar-width:thin}
+nav[role=tablist] button{flex:0 0 auto;text-align:center;border:1px solid transparent;border-radius:999px;padding:9px 16px;background:transparent;color:var(--muted);font-size:13px;font-weight:600;min-height:40px;white-space:nowrap}
+nav[role=tablist] button:hover:not(:disabled){background:#ffffffc0;color:var(--ink)}
+nav[role=tablist] button[aria-selected=true]{background:#102C2A;color:#fff;border-color:#102C2A}
+.nav-count{display:inline-block;margin-left:6px;color:var(--muted);font:500 12px/1.6 var(--sans);font-variant-numeric:tabular-nums}
+nav[role=tablist] button[aria-selected=true] .nav-count{color:#65DEC0}
+.nav-count.is-alert{color:var(--red)}
+main{max-width:1680px;margin:0 auto;padding:16px 28px 48px 12px;min-width:0}
+h1{font-size:30px;font-weight:650;line-height:1.2;letter-spacing:-.035em;margin:0 0 6px}
+h2{font:650 16px/1.4 var(--sans);letter-spacing:-.015em;margin:0 0 12px}
+h3{font:650 14px/1.4 var(--sans);margin:20px 0 8px;color:var(--ink)}
+p{margin:0 0 10px;max-width:72ch}
+.muted,.help{color:var(--muted);font-size:13px}
+.intro{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:16px}
+.intro p{margin-bottom:0}
+.summary{font:400 12px/1.5 var(--sans);font-variant-numeric:tabular-nums;color:var(--muted);overflow-wrap:anywhere;max-width:40%}
+.filters{padding:16px 20px;background:#fbfcf9;border:1px solid #fff;border-radius:24px;margin-bottom:12px}
+.filter-primary{display:block;width:100%}
+.filter-advanced{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+.filter-primary>label,.filter-advanced>label{min-width:0}
+.advanced-filters{margin-top:10px}
+.advanced-filters summary{font-size:12px;font-weight:600;color:var(--blue);cursor:pointer;width:fit-content;user-select:none;padding:4px 0}
+.panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px 10px}
+.panel-heading h2{margin:0;font-size:15px;font-weight:650}
+.panel-heading .help{font-size:12px}
+.catalog-sidebar{background:#fbfcf9;border:1px solid #fff;border-radius:24px;min-width:0}
+.catalog-sidebar .catalog-list{border:0;background:transparent;padding-top:0;border-top-left-radius:0;border-top-right-radius:0}
+.scenario-footer{display:block;margin-top:8px}.scenario-index{font-size:12px}.scenario-title{overflow-wrap:anywhere}
+.detail-header{padding-bottom:16px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+.detail-meta{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:12px}
+.step-heading{color:var(--ink)}
+label{display:block;font-size:12px;font-weight:600;color:#46516a}
+label input,label select{display:block;margin-top:6px;font-weight:400}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 16px;font-size:13px;padding:0 4px}
+.toolbar-actions,.toolbar-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.count-status{font:500 12px/1.4 var(--sans);font-variant-numeric:tabular-nums;color:var(--muted)}
+.shortcut-hint{font-size:12px;color:var(--muted)}
+kbd{display:inline-block;min-width:20px;padding:1px 5px;border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:5px;background:var(--panel);color:var(--ink);font:500 12px/1.4 var(--mono);text-align:center}
+.catalog{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:18px;align-items:start}
+.catalog-list{max-height:74vh;overflow:auto;scrollbar-color:var(--line-strong) transparent;background:#fbfcf9;border:1px solid #fff;border-radius:24px;padding:8px}
+.scenario{display:block;width:100%;text-align:left;border:1px solid transparent;border-radius:10px;padding:12px 14px;background:transparent;margin-bottom:2px}
+.scenario:last-child{margin-bottom:0}
+.scenario:hover:not([aria-pressed=true]){background:#eef6f3}
+.scenario[aria-pressed=true]{border-color:#7bbdb3;background:#e2f1ee}
+.scenario strong{display:block;margin:6px 0 8px;font-size:14px;font-weight:600;line-height:1.45}
+.meta{font:12px/1.5 var(--mono);color:var(--muted);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.badge{display:inline-flex;align-items:center;padding:2px 0;border:1px solid transparent;font:400 12px/1.3 var(--sans);color:var(--muted);margin:0 8px 4px 0;overflow-wrap:anywhere;max-width:100%}
+.badge-critical,.badge-fail,.badge-high,.badge-medium,.badge-low,.badge-pass{padding:2px 7px;border-radius:5px;font-weight:500;font-size:12px}
+.badge-critical,.badge-fail{background:var(--red-soft);border-color:#efc8cc;color:var(--red)}
+.badge-high{background:var(--amber-soft);border-color:#ebd3ad;color:var(--amber)}
+.badge-medium{background:var(--blue-soft);border-color:#a8d5cc;color:var(--blue)}
+.badge-low{background:var(--surface);border-color:var(--line);color:var(--muted)}
+.badge-pass{background:var(--green-soft);border-color:#c4ddcf;color:var(--green)}
+.detail{background:var(--panel);border:1px solid #fff;border-radius:26px;padding:26px 28px;min-width:0;scrollbar-color:var(--line-strong) transparent}
+.detail h2{font:650 23px/1.3 var(--sans);letter-spacing:-.025em;margin:4px 0 12px;overflow-wrap:anywhere}
+.detail h2.section-gap{font:650 16px/1.4 var(--sans);margin-top:24px;padding-top:18px;border-top:1px solid var(--line)}
+#refresh[aria-busy=true]{color:var(--muted);cursor:progress}
+.detail ul,.detail ol{margin:8px 0 16px;padding-left:20px}
+.detail li{margin-bottom:6px}
+.detail ol.steps,.steps{padding-left:36px;margin:16px 0 24px;counter-reset:step;list-style:none}
+.steps li{position:relative;padding:12px 0 14px;border-bottom:1px solid #edf0f5;margin-bottom:4px}
+.steps li:last-child{border-bottom:0}
+.steps li::before{content:counter(step);position:absolute;left:-36px;top:12px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#e2ebe4;color:#283d38;font:600 12px/1 var(--mono);counter-increment:step}
+.steps strong{display:block;font-size:14px;font-weight:600;margin-bottom:4px;color:var(--ink)}
+.steps p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.steps p.step-data{font:12px/1.55 var(--mono);color:var(--muted);background:#f3f6f3;padding:4px 8px;border-radius:6px;display:inline-block;max-width:100%}
+.steps p.step-expected{font:14px/1.65 var(--sans);color:#2d3a4e;max-width:68ch}
+.annotation-box{margin-top:24px;border-top:1px solid var(--line);display:grid;grid-template-columns:160px minmax(0,1fr);gap:14px;align-items:start;padding-top:18px}
+.annotation-note{grid-column:1/-1;font-size:12px;color:var(--muted);margin:0}
+.table-wrap{overflow:auto;max-height:78vh;padding:0;background:var(--panel);border:1px solid #fff;border-radius:24px;scrollbar-color:var(--line-strong) var(--surface)}
+.doc-table{width:100%;min-width:1060px;border-collapse:separate;border-spacing:0;font-size:13px;text-align:left}
+.doc-table caption{text-align:left;padding:14px 20px 12px;font-size:12px;font-weight:400;color:var(--muted);line-height:1.4;background:var(--panel);border-bottom:1px solid var(--line)}
+.doc-table th,.doc-table td{padding:calc(10px * var(--p-density,1)) 12px;border-bottom:1px solid var(--line);border-right:1px solid #edf0f5;vertical-align:top;overflow-wrap:anywhere}
+.doc-table th:last-child:not(.col-expected),.doc-table td:last-child:not(.col-expected),.doc-table .col-comment{border-right:0}
+.doc-table thead th{position:sticky;top:0;z-index:2;background:#e5ece6;font-size:12px;font-weight:650;color:#102C2A;vertical-align:middle;box-shadow:inset 0 -1px 0 var(--line);height:38px;border-right:1px solid #d0dbd2}
+.doc-table thead th.col-comment{border-right:0}
+.doc-table thead tr:nth-child(2) th{top:38px;font-weight:600;color:#344945}
+.doc-table thead th.col-expected{border-right:1px solid #d0dbd2}
+.doc-table td.col-expected{border-right:1px solid #edf0f5}
+.doc-table thead tr:first-child th[colspan]{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.05em;font-weight:700;color:#344945;border-bottom:1px solid #d0dbd2}
+.doc-table thead th.col-step-num,.doc-table thead th.col-priority,.doc-table thead th.col-status{text-align:center}
+.doc-table tbody th{font:600 12px/1.5 var(--mono);color:var(--ink);background:var(--panel);white-space:nowrap}
+.doc-table .module-group th{background:#edf3ee;font:600 13px/1.5 var(--sans);color:#102C2A;padding:12px 16px;border-top:8px solid #fff}
+.doc-table .module-group .meta{font-weight:400;margin-left:8px}
+.doc-table tr.row-pass td,.doc-table tr.row-pass th[scope=row]{background:#f0f7f3}
+.doc-table tr.row-fail td,.doc-table tr.row-fail th[scope=row]{background:#fff1f1}
+.col-id{width:96px}.col-title{width:180px}.col-pre{width:170px}
+.col-step-num{width:42px;text-align:right;font:500 12px/1.5 var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.col-action{width:190px}.col-data{width:140px;font:12px/1.5 var(--mono);color:var(--muted)}
+.col-expected{width:220px;font:13.5px/1.6 var(--sans);max-width:68ch}
+.col-priority{width:96px;white-space:nowrap;vertical-align:middle;text-align:center}
+.col-priority .badge{margin:0 auto;display:inline-flex}
+.col-status{width:120px;vertical-align:middle;text-align:center}.col-comment{width:200px;vertical-align:middle}
+.pre-list{margin:0;padding-left:16px;font-size:12px;line-height:1.5}.pre-list li{margin-bottom:4px}
+.cell-title{font-weight:600;color:var(--ink);display:block;margin-bottom:4px}
+.status-select{min-height:34px;padding:6px;font-size:12px;font-weight:500}
+.comment-input{min-height:64px;resize:vertical;font-size:12px;line-height:1.5;padding:8px;margin-top:6px}
+.empty{padding:26px 20px;border:1px dashed var(--line-strong);border-radius:18px;color:var(--muted);background:#f8faff;font-size:13px}
+.notice{background:var(--amber-soft);color:#704619;border:1px solid #e6c99f;padding:14px 18px;margin-bottom:16px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+.error{color:var(--red);font-weight:500}
+.issue{padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:4px;min-width:0}
+.issue:last-child{border-bottom:0}
+.issue h3{margin:0 0 6px;font-size:13.5px;font-weight:600;color:var(--ink);overflow-wrap:anywhere;min-width:0}
+.issue p{margin:4px 0;overflow-wrap:anywhere;word-break:break-word;font-size:12px;color:var(--muted);min-width:0}
+#diagnostics{min-width:0}
+.diagnostic-check.is-ok{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;padding:6px 0;border-bottom:1px solid #edf0f6;font-size:12px;color:var(--muted);min-width:0}
+.diagnostic-check.is-ok strong{color:var(--green);font-weight:600;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.diagnostic-check.is-ok span{overflow-wrap:anywhere;word-break:break-word;min-width:0;flex:1 1 200px}
+.issue.is-attention{padding:12px 14px;background:var(--red-soft);border:1px solid #f2c7cb;border-radius:12px;margin:8px 0;min-width:0}
+.issue.is-attention strong{color:var(--red);display:block;margin-bottom:4px;font-size:13px;font-weight:600;overflow-wrap:anywhere;min-width:0}
+.issue.is-attention p{color:#782328;margin:0;font-size:12px;overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.drift-status{display:inline-block;padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--ink);font-size:12px;font-weight:500}
+.drift-status.is-blocked{background:var(--red-soft);border-color:#ecc6cc;color:var(--red)}
+.drift-status.is-clear{background:var(--green-soft);border-color:#c4ddcf;color:var(--green)}
+.drift-status.is-unknown{background:var(--amber-soft);border-color:#ebd3ad;color:var(--amber)}
+.columns{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px;align-items:start}
+.columns>div,.columns>.detail{padding:24px 26px;background:var(--panel);border:1px solid #fff;border-radius:26px;min-width:0}
+.impact-form{display:flex;align-items:end;gap:10px;margin:16px 0}.impact-form label{flex:1;min-width:0}
+.impact-form button{background:#102C2A;border-color:#102C2A;color:#fff;flex-shrink:0}.impact-form button:hover:not(:disabled){background:#1c423e}
+.graph-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 16px;padding:0 4px}
+.graph-toolbar-group{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.graph-filter-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--muted)}
+.graph-filter-label select{width:auto;min-height:36px;padding:6px 10px;font-size:12px;font-weight:500;margin:0}
+.graph-search-input{min-height:36px;padding:6px 10px;font-size:12px;width:190px}
+.graph-toggle{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer}
+.graph-toggle input{width:16px;height:16px;min-height:0;cursor:pointer;margin:0}
+.graph-layout{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:18px;align-items:start}
+.graph-scroll{overflow:auto;padding:16px;background:#f5f8f5;border:1px solid #fff;border-radius:26px;max-height:80vh;min-height:560px;scrollbar-color:var(--line-strong) var(--surface);-webkit-overflow-scrolling:touch}
+.graph{position:relative;min-width:1168px}.graph svg{position:absolute;inset:0;pointer-events:none;width:100%;height:100%}
+.graph-edge{fill:none;stroke-linecap:round}.graph-edge.edge-hover{stroke:var(--blue)!important;stroke-width:2px!important;stroke-opacity:.9!important}
+.graph-node{position:absolute;width:220px;min-height:56px;padding:9px 12px;text-align:left;overflow-wrap:anywhere;font-size:12px;background:var(--panel);border:1px solid #c9d7cc;border-radius:16px;color:var(--ink)}
+.graph-node strong{display:block;margin-bottom:3px;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.graph-node .meta{display:block;font:500 12px/1.3 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.graph-node:hover{border-color:#7bbdb3;background:#f8faf8}
+.graph-node.related{background:#e2f1ee;border-color:#7bbdb3;color:var(--ink)}
+.graph-node.related strong{color:var(--ink)}.graph-node.related .meta{color:var(--muted)}
+.graph-node.related-hover{background:#e2f1ee!important;border-color:#7ab8ae!important;color:var(--ink)!important}
+.graph-node.related-hover strong{color:var(--ink)!important}.graph-node.related-hover .meta{color:var(--muted)!important}
+.graph-node[aria-pressed=true],.graph-node.selected{background:#102C2A!important;color:#fff!important;border-color:#102C2A!important}
+.graph-node[aria-pressed=true] strong,.graph-node.selected strong{color:#fff!important}
+.graph-node[aria-pressed=true] .meta,.graph-node.selected .meta{color:#65DEC0!important}
+.graph-node.node-dimmed{background:#edf2ed;border-color:#d5dfd6;color:#788880}
+.graph-node.node-dimmed strong{color:#64756c}
+.graph-node.node-dimmed .meta{color:#88978e}
+.graph-node.node-dimmed:hover,.graph-node.node-dimmed:focus-visible{background:var(--panel);border-color:#7bbdb3;color:var(--ink)}
+.graph-node.node-dimmed:hover strong,.graph-node.node-dimmed:focus-visible strong{color:var(--ink)}
+.graph-node.node-dimmed:hover .meta,.graph-node.node-dimmed:focus-visible .meta{color:var(--muted)}
+.graph-heading{position:absolute;font:600 13px/1.3 var(--sans);color:#3c504b}
+.neighbor{display:block;text-align:left;width:100%;margin:0;padding:10px 0;font:12px/1.5 var(--sans);border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;overflow-wrap:anywhere}
+.neighbor:last-child{border-bottom:0}
+.diff-row{margin:0 0 16px;padding:22px 24px;background:var(--panel);border:1px solid #fff;border-radius:24px}
+.diff-row h2{font:600 14px/1.5 var(--mono);margin:0 0 12px;overflow-wrap:anywhere;color:var(--ink)}
+.diff-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:12px}
+.diff-side{padding:14px 16px;border-radius:12px;min-width:0}
+.diff-side h3{margin:0 0 8px;font-size:13px}
+.diff-side pre{margin:0;padding:0;background:transparent;border:0;border-radius:0}
+.diff-side.before{background:#fff1f2;border:1px solid #fecdd3}
+.diff-side.before h3{color:var(--red)}
+.diff-side.after{background:#e6f4f1;border:1px solid #9dd1c7}
+.diff-side.after h3{color:var(--blue)}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 var(--mono);margin:8px 0 0;padding:0;background:transparent;border:0;color:inherit}
+details{margin-top:14px}
+summary{cursor:pointer;color:var(--blue);font-weight:600;font-size:13px}
+.export-bar{margin:0 0 16px;padding:0 4px}
+.export-summary{color:#3a504a;font-size:13px}.export-summary .help{font-weight:400;margin-left:12px}
+.export-bar[open]>.help{margin:10px 0}.export-bar[open] .export-links{margin-top:10px}
+.export-links{display:flex;flex-wrap:wrap;gap:7px}.export-links a{display:inline-flex;align-items:center;border:1px solid #c5d4cb;background:var(--panel);padding:6px 11px;border-radius:6px;font-size:12px;font-weight:500;text-decoration:none;min-height:34px}
+.export-links a:hover{background:var(--blue-soft);border-color:#7ab8ae}.export-bar h2{font-size:13px;margin:0 0 4px}.export-bar .help{margin:0;font-size:12px}
+.section-gap{margin-top:24px}
+footer{font-size:12px;color:var(--muted);padding:16px 28px 24px 12px}
+[hidden]{display:none!important}
+@media(min-width:981px){#catalog-list,#scenario-detail{max-height:74vh;overflow:auto}}
+@media(min-width:1500px){.workspace-header{grid-template-columns:auto minmax(0,1fr) auto;gap:24px}.workspace-header nav[role=tablist]{grid-column:2}.workspace-header .connection{grid-column:3}}
+@media(max-width:1100px){.graph-layout{grid-template-columns:minmax(0,1fr) 250px}}
+@media(max-width:980px){.filter-advanced{grid-template-columns:repeat(2,minmax(0,1fr))}.catalog,.columns,.graph-layout{grid-template-columns:1fr}.catalog-list{max-height:300px}.intro{align-items:start;flex-direction:column;gap:10px}.summary{max-width:100%}.graph-scroll{min-height:420px}.connection{gap:8px}}
+@media(max-width:600px){
+.workspace-shell{grid-template-columns:1fr}
+.icon-rail{display:none}
+.workspace-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px 8px}
+.workspace-header .brand{font-size:18px}
+.workspace-header .brand-logo{height:24px;max-width:110px}
+.workspace-header .connection{gap:8px;font-size:12px;width:auto}
+.workspace-header #refresh{min-height:44px;padding:6px 14px;font-size:12px}
+.workspace-header nav[role=tablist]{width:100%;justify-content:start;gap:4px;padding:4px 0 2px;margin:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+nav[role=tablist] button{min-height:44px;padding:8px 14px;font-size:12px}
+main{padding:10px 14px 32px}
+h1{font-size:22px;margin:0 0 4px}
+.intro{flex-direction:column;align-items:start;gap:4px;margin-bottom:10px}
+.intro p{font-size:12px;margin-bottom:0}
+.summary{display:none}
+.filters{padding:10px 12px;border-radius:18px;margin-bottom:10px}
+.filter-primary{display:block;width:100%}
+.filter-primary label{font-size:12px}
+.filter-primary input{min-height:44px;padding:8px 12px;margin-top:4px;font-size:13px}
+.advanced-filters{margin-top:6px}
+.advanced-filters summary{min-height:44px;display:inline-flex;align-items:center;font-size:12px;padding:4px 0}
+.filter-advanced{grid-template-columns:1fr;gap:10px;margin-top:8px}
+.filter-advanced label{font-size:12px}
+.filter-advanced input,.filter-advanced select{min-height:44px;padding:8px 10px;font-size:12px}
+.toolbar{margin:0 0 10px;padding:0 2px;gap:8px}
+.toolbar-meta{gap:6px}
+.shortcut-hint{display:none}
+.count-status{font-size:12px}
+.toolbar-actions{gap:8px;width:100%}
+.toolbar-actions button{min-height:44px;padding:8px 12px;font-size:12px;flex:1}
+.export-bar{margin:0 0 10px}
+.export-summary{min-height:44px;display:inline-flex;align-items:center;font-size:12px}
+.export-links a{min-height:44px;padding:8px 12px;font-size:12px}
+.catalog{grid-template-columns:1fr;gap:12px}
+.catalog-sidebar{border-radius:18px}
+.catalog-list{max-height:280px;padding:6px}
+.scenario{min-height:44px}
+.detail,.columns>div,.columns>.detail{padding:18px;border-radius:20px}
+.diagnostic-check.is-ok{flex-direction:column;align-items:flex-start;gap:2px;padding:6px 0}
+.diagnostic-check.is-ok strong{white-space:normal;min-width:0;width:100%}
+.diagnostic-check.is-ok span{width:100%;min-width:0;flex:none}
+.annotation-box,.diff-columns{grid-template-columns:1fr}
+.status-select{min-height:44px;font-size:12px}
+.impact-form{align-items:stretch;flex-direction:column}
+.impact-form input{min-height:44px;font-size:13px}
+.impact-form button{min-height:44px;font-size:13px}
+.graph-toolbar{gap:8px;margin-bottom:10px}
+.graph-toolbar-group{width:100%;gap:8px}
+.graph-search-input{width:100%;min-height:44px;font-size:12px}
+.graph-filter-label{width:100%;justify-content:space-between;font-size:12px}
+.graph-filter-label select{flex:1;margin-left:8px;min-height:44px;font-size:12px}
+.graph-toggle{min-height:44px;display:inline-flex;align-items:center;font-size:12px}
+#graph-clear-sel{min-height:44px;font-size:12px}
+.neighbor{min-height:44px;display:flex;align-items:center;font-size:12px}
+.graph-scroll{padding:10px;min-height:360px;border-radius:18px}
+.steps li{padding:10px 0}
+.diff-row{padding:16px;border-radius:18px}
+.diff-side{padding:12px}
+footer{padding:14px;font-size:12px}
+}
+@media(prefers-reduced-motion:no-preference){button,.export-links a,.rail-brand{transition:background-color .14s ease-out,border-color .14s ease-out,color .14s ease-out}.graph-edge{transition:stroke-opacity .15s ease,stroke .15s ease}}
+@media(forced-colors:active){.scenario[aria-pressed=true],nav[role=tablist] button[aria-selected=true],.graph-node[aria-pressed=true],.rail-brand[aria-current=page]{outline:2px solid Highlight}.graph-edge{stroke:CanvasText}.graph-node.node-dimmed{opacity:1}}
+`;
+````
+
 ````skills/testweave/SKILL.md
 ---
 name: testweave
@@ -3863,6 +5139,7 @@ See [generate](generate.md) for portable exports and [contract schema](../refere
 - [Initialize](init.md) or [update](update.md) integrations.
 - [Scan](scan.md) existing projects; review needs-review drafts.
 - [Sync](sync.md) code/spec alignment, semantic filtering and interactive resolution.
+- [Diff and viewer](review.md) semantic PR summaries and the local inspection UI.
 - [Doctor](doctor.md) configuration, dead paths and missing spec anchors.
 - [Generate](generate.md) exports and optional AI drafts.
 - [Import](import.md) legacy CSV/JSON manual QA definitions.
@@ -3917,6 +5194,26 @@ Scoped spec reads also work before the first Git commit, comparing staged and un
 Read [the contract schema](../references/contract-schema.md) before upserting modules. CLI [scan](scan.md) provides local discovery; it is not an MCP tool.
 ````
 
+````skills/testweave/commands/review.md
+# Review QA definition changes
+
+```sh
+testweave diff --base origin/main --format markdown
+testweave diff --base HEAD --format json
+testweave sync --base origin/main --strict --format github
+testweave ui
+testweave view --port 4317
+```
+
+`diff` compares a Git contract snapshot, including package includes, against current definitions. Text, Markdown and JSON summarize added/removed modules and test IDs, changed steps and expected outcomes, NFT profiles, paths, specs, fixtures and policy. Formatting and object-key ordering alone do not count. `--format github` provides a Markdown summary and writes it to `GITHUB_STEP_SUMMARY` when set.
+
+`sync --format github` emits escaped workflow annotations and a Markdown summary combining drift and semantic contract changes. It retains sync policy and exit codes. Fetch the chosen base revision in CI before comparing it.
+
+`ui` (`view`) starts a loopback HTTP viewer and prints its URL. The default selects an available port; `--port` selects one explicitly. Stop it with Ctrl+C. It needs no cloud, API key or frontend build service.
+
+The viewer contains a filterable scenario/NFT catalog, a dedicated test-document table (`ID`, `Title`, `Preconditions`, ordered `#`/`Action`/`Data`/`Expected` step subcolumns, `Priority`, and browser-local `Pass / Fail` and `Comment` notes), live drift diagnostics and impact previews, an interactive coverage graph, semantic before/after changes, and filtered export downloads. It refreshes from workspace changes. Catalog, test-document table, and exports remain available without Git; unavailable comparison sections show errors. Inspection, downloads, and browser-local notes never modify `test-truth.md` or exported artifacts.
+````
+
 ````skills/testweave/commands/scan.md
 # Adopt an existing project
 
@@ -3943,9 +5240,12 @@ Review the source evidence and context. Replace `needs-review` TODOs with specif
 ```sh
 testweave sync
 testweave sync --base origin/main --strict --json
+testweave sync --base origin/main --strict --format github
 ```
 
 Use an available repository revision for `--base`. Without it, working-tree checks require a resolvable upstream. `--strict` blocks drift even under warning policy; `--json` returns a structured report.
+
+`--format github` emits workflow annotations and combines drift with semantic contract changes in a Markdown summary, appending to `GITHUB_STEP_SUMMARY` when available. See [review guidance](review.md).
 
 Every changed tracked source file needs module coverage. An existing affected module needs changes to its description or test content; renaming it, editing paths or reordering tests does not clear stale documentation. Review whether the updated scenarios describe the actual behavior change.
 
@@ -4470,7 +5770,7 @@ test('skill bundle installs authoritative documents with resolvable local links'
   assert.equal(await readFile(path.join(installedRoot, TESTWEAVE_REFERENCE_NAME), 'utf8'), TESTWEAVE_REFERENCE_CONTENT);
   assert.deepEqual(TESTWEAVE_SKILL_FILES.map((entry) => entry.path).sort(), [
     'SKILL.md', 'commands/doctor.md', 'commands/generate.md', 'commands/import.md', 'commands/index.md', 'commands/init.md', 'commands/mcp.md',
-    'commands/scan.md', 'commands/sync.md', 'commands/update.md',
+    'commands/review.md', 'commands/scan.md', 'commands/sync.md', 'commands/update.md',
     'references/contract-schema.md', 'references/functional-testing.md',
   ]);
   assert.match(TESTWEAVE_SKILL_CONTENT, /^---\nname: testweave\ndescription: [^\n]+\n---\n/);
@@ -4624,6 +5924,174 @@ test('compiled CLI supports update command to refresh rules and skills', async (
   const freshUpdate = await exec(process.execPath, [cliPath, '--cwd', freshRoot, 'update', '--yes']);
   assert.match(freshUpdate.stdout, /updated/);
   assert.match(freshUpdate.stdout, /created/);
+});
+````
+
+````tests/audit-imports.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { contractFixture } from './helpers.js';
+import { TEST_TYPES, TEST_TYPE_LABELS, testTypeSchema } from '../src/schema/test-truth.js';
+import { generateExport } from '../src/integrations/exporters.js';
+import { importCases } from '../src/integrations/importers.js';
+
+test('Xray CSV and JSON exports reimport every emitted test type label', () => {
+  for (const type of TEST_TYPES) for (const format of ['csv', 'json'] as const) {
+    const contract = contractFixture();
+    contract.modules[0]!.tests[0]!.type = type;
+    const artifact = generateExport(contract, { target: 'xray', format, projectKey: 'QA' });
+    assert.equal(importCases(artifact.content, 'xray', format)[0]!.type, type,
+      `${type} (${TEST_TYPE_LABELS[type]}) via ${format}`);
+  }
+  for (const type of TEST_TYPES) assert.equal(testTypeSchema.parse(TEST_TYPE_LABELS[type]), type);
+});
+
+test('Jira CSV keeps separate labels usable for tag filtering without inferring types', () => {
+  const contract = contractFixture();
+  contract.modules[0]!.tests[0]!.type = 'smoke';
+  contract.modules[0]!.tests[0]!.tags = ['release', 'login'];
+  const csv = generateExport(contract, { target: 'jira', format: 'csv' }).content;
+  const [imported] = importCases(csv, 'jira', 'csv');
+  assert.deepEqual(imported!.tags, ['release', 'login', 'smoke']);
+  assert.equal(imported!.type, 'regression', 'a smoke label alone is not an explicit test type');
+  const json = generateExport(contract, { target: 'jira', format: 'json', projectKey: 'QA' }).content;
+  assert.deepEqual(imported!.tags, importCases(json, 'jira', 'json')[0]!.tags);
+  for (const tag of imported!.tags) assert.equal(generateExport({ ...contract, modules: [{ ...contract.modules[0]!, tests: [imported!] }] },
+    { target: 'jira', format: 'csv', tags: tag }).testCount, 1);
+});
+````
+
+````tests/audit-queries.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { impact, specContext } from '../src/engine/queries.js';
+import { contractFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+
+test('planned recursive glob overlap finishes within a bounded subprocess', async (t) => {
+  const root = await temporaryDirectory(t);
+  const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { impact } from ${JSON.stringify(new URL('../src/engine/queries.ts', import.meta.url).href)};
+    import { contractFixture } from ${JSON.stringify(new URL('./helpers.ts', import.meta.url).href)};
+    const contract = contractFixture();
+    contract.modules[0].paths = ['**/'.repeat(14) + 'b'];
+    assert.deepEqual((await impact(process.argv[1], contract, ['**/'.repeat(14) + 'a'])).modules, []);
+    console.log('completed');
+  `, root], { timeout: 5_000 });
+  assert.equal(result.stdout.trim(), 'completed');
+});
+
+test('planned glob overlap retains zero-depth, nested and conservative wildcard matches', async (t) => {
+  const root = await temporaryDirectory(t);
+  const contract = contractFixture();
+  for (const [pattern, query, expected] of [
+    ['src/**/a.ts', 'src/a.ts', true],
+    ['src/**/a.ts', 'src/x/**/a.ts', true],
+    ['src/**/a.ts', 'other/**/a.ts', false],
+    ['src/*/a.ts', 'src/?/a.ts', true],
+    ['src/**', 'src', true],
+  ] as const) {
+    contract.modules[0]!.paths = [pattern];
+    assert.equal((await impact(root, contract, [query])).modules.length > 0, expected, `${pattern}: ${query}`);
+  }
+});
+
+for (const localState of ['dirty', 'deleted'] as const) {
+  test(`explicit spec target reads committed sections when local spec is ${localState}`, async (t) => {
+    const { root, git } = await repositoryFixture(t);
+    const file = path.join(root, 'spec.md');
+    await writeFile(file, '# Login\nold rule\n# Other\nold neighbor\n');
+    await git.add('.');
+    await git.commit('Base specification');
+    const base = (await git.revparse(['HEAD'])).trim();
+    await writeFile(file, '# Login\ncommitted rule\n# Other\nnew neighbor\n');
+    await git.add('.');
+    await git.commit('Target specification');
+    const target = (await git.revparse(['HEAD'])).trim();
+    await writeFile(file, '# Login\nlocal rule\n# Other\nlocal neighbor\n');
+    if (localState === 'deleted') await rm(file);
+    const scoped = await specContext(root, contractFixture(), 'spec.md#login', base, target);
+    assert.equal(scoped.sections[0]?.content, '# Login\ncommitted rule\n');
+    assert.match(scoped.diff, /-old rule/);
+    assert.match(scoped.diff, /\+committed rule/);
+    assert.doesNotMatch(scoped.diff, /neighbor|local rule/);
+    if (localState === 'dirty') {
+      assert.equal((await specContext(root, contractFixture(), 'spec.md#login', base)).sections[0]?.content, '# Login\nlocal rule\n');
+    } else await assert.rejects(specContext(root, contractFixture(), 'spec.md#login', base), /ENOENT/);
+  });
+}
+
+test('committed spec slices preserve pointer, anchor, reference and byte-size boundaries', async (t) => {
+  const { root, git } = await repositoryFixture(t);
+  await writeFile(path.join(root, 'spec.md'), '# Login\nfirst\n# Login\nsecond\n');
+  await writeFile(path.join(root, 'large.md'), 'é'.repeat(500_001));
+  await git.add('.');
+  await git.commit('Boundary specifications');
+  const contract = contractFixture();
+  assert.equal((await specContext(root, contract, 'spec.md#login-1', undefined, 'HEAD')).sections[0]?.content, '# Login\nsecond\n');
+  await assert.rejects(specContext(root, contract, 'spec.md#missing', undefined, 'HEAD'), /Missing heading/);
+  await assert.rejects(specContext(root, contract, 'missing.md', undefined, 'HEAD'), /spec/i);
+  await assert.rejects(specContext(root, contract, 'large.md', undefined, 'HEAD'), /no larger than 1 MB/);
+  await assert.rejects(specContext(root, contract, '../spec.md', undefined, 'HEAD'));
+  await assert.rejects(specContext(root, contract, 'spec.md', undefined, '--invalid'), /Invalid Git reference/);
+});
+````
+
+````tests/audit-semantic.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import ts from 'typescript';
+import { isCosmeticChange } from '../src/engine/semantic.js';
+
+for (const initializer of [
+  '(() => 1)', '(function () { return 1; })', '(class {})',
+  '((() => 1) as () => number)', '(<() => number>(() => 1))',
+  '((() => 1) satisfies () => number)', '((() => 1)!)',
+]) {
+  test(`semantic drift preserves inferred names through ${initializer}`, () => {
+    const before = `export function login() { const first = ${initializer}; return first.name; }`;
+    const after = before.replaceAll('first', 'second');
+    for (const [source, expected] of [[before, 'first'], [after, 'second']]) {
+      const javascript = ts.transpileModule(source!, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.CommonJS } }).outputText;
+      const exports: { login?: () => string } = {};
+      Function('exports', javascript)(exports);
+      assert.equal(exports.login!(), expected);
+    }
+    assert.equal(isCosmeticChange('a.ts', before, after), false);
+    assert.equal(isCosmeticChange('a.ts', before, '// comment\n' + before), true);
+  });
+}
+
+for (const declaration of [
+  'export function login<T extends Allowed>(x: T): T { return x; }',
+  'export function login<T = Allowed>(x: T): T { return x; }',
+  'export const login = memo(<T extends Allowed>(x: T): T => x);',
+  'export class Config<T extends Allowed = Allowed> {}',
+  'export class Config { login<T = Allowed>(x: T): T { return x; } }',
+  'export interface Config<T extends Allowed = Allowed> {}',
+  'export type Config<T extends Allowed = Allowed> = T;',
+]) {
+  test(`semantic drift follows public generic dependencies: ${declaration}`, () => {
+    const before = `type Allowed = string; ${declaration}`;
+    assert.equal(isCosmeticChange('a.ts', before, before.replace('Allowed = string', 'Allowed = number')), false);
+    assert.equal(isCosmeticChange('a.ts', before, '// comment\n' + before), true);
+  });
+}
+
+test('semantic drift preserves public class field optionality', () => {
+  const before = 'export class Config { value?: string; }';
+  assert.equal(isCosmeticChange('a.ts', before, before.replace('value?', 'value!')), false);
+  assert.equal(isCosmeticChange('a.ts', before, before.replace('value?', 'value')), false);
+});
+
+test('internal types and wrapped scalar local renames remain cosmetic', () => {
+  const before = 'export function login() { type Internal = string; const first = (1 as number); return first; }';
+  assert.equal(isCosmeticChange('a.ts', before, before.replace('Internal = string', 'Internal = number')), true);
+  assert.equal(isCosmeticChange('a.ts', before, before.replaceAll('first', 'second')), true);
 });
 ````
 
@@ -5238,6 +6706,146 @@ test('OpenAI adapter rejects incomplete SDK responses', async () => {
     fetch: async () => Response.json({ id: 'resp_test', object: 'response', status: 'incomplete', output: [] }),
   });
   await assert.rejects(new OpenAiGenerator(client, 'test-model').generate('System', 'Input'), /complete structured module/);
+});
+````
+
+````tests/logo-integration.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { viewerPage } from '../src/ui/page.js';
+import { viewerStyles } from '../src/ui/styles.js';
+import { startUi } from '../src/ui/server.js';
+import { repositoryFixture } from './helpers.js';
+
+test('production assets are in durable assets/ directory with correct formats and palette', async () => {
+  const assetsDir = path.resolve('assets');
+  const requiredAssets = [
+    'testweave-horizontal-color.svg',
+    'testweave-horizontal-dark.svg',
+    'testweave-symbol.svg',
+    'testweave-symbol-small.svg',
+    'testweave-symbol-on-dark.svg',
+    'favicon.svg',
+    'favicon.ico',
+    'apple-touch-icon.png',
+    'icon-192.png',
+    'icon-512.png',
+    'maskable-512.png',
+    'site.webmanifest',
+  ];
+
+  for (const file of requiredAssets) {
+    const info = await stat(path.join(assetsDir, file));
+    assert.ok(info.size > 0, `${file} must not be empty`);
+  }
+
+  // Palette checks: #087F72 teal, #102C2A ink, #65DEC0 mint, #F5F7F2 paper
+  const colorLogo = await readFile(path.join(assetsDir, 'testweave-horizontal-color.svg'), 'utf8');
+  assert.match(colorLogo, /#087F72/i, 'Color logo must contain teal symbol');
+  assert.match(colorLogo, /#102C2A/i, 'Color logo must contain ink wordmark');
+  assert.doesNotMatch(colorLogo, /#65DEC0/i, 'Mint is not approved on light backgrounds');
+
+  const darkLogo = await readFile(path.join(assetsDir, 'testweave-horizontal-dark.svg'), 'utf8');
+  assert.match(darkLogo, /#65DEC0/i, 'Dark logo must contain mint symbol');
+  assert.match(darkLogo, /#(?:FFFFFF|FFF)\b/i, 'Dark logo must contain white wordmark');
+
+  const adaptiveFavicon = await readFile(path.join(assetsDir, 'favicon.svg'), 'utf8');
+  assert.match(adaptiveFavicon, /#087F72/i, 'Favicon uses teal for default');
+  assert.match(adaptiveFavicon, /prefers-color-scheme:\s*dark/i, 'Favicon supports dark scheme');
+  assert.match(adaptiveFavicon, /#65DEC0/i, 'Favicon uses mint for dark scheme');
+
+  const manifest = JSON.parse(await readFile(path.join(assetsDir, 'site.webmanifest'), 'utf8')) as {
+    name: string;
+    theme_color: string;
+    icons: { src: string }[];
+  };
+  assert.equal(manifest.name, 'TestWeave');
+  assert.equal(manifest.theme_color, '#102C2A');
+  assert.ok(manifest.icons.some((i) => i.src === '/icon-192.png'));
+  assert.ok(manifest.icons.some((i) => i.src === '/icon-512.png'));
+});
+
+test('README.md references durable logo assets with light/dark GitHub support and alt text', async () => {
+  const readme = await readFile(path.resolve('README.md'), 'utf8');
+  assert.match(readme, /<picture>/, 'README uses HTML picture element for GitHub light/dark support');
+  assert.match(readme, /media="\(prefers-color-scheme:\s*dark\)"[^>]*srcset="assets\/testweave-horizontal-dark\.svg"/);
+  assert.match(readme, /src="assets\/testweave-horizontal-color\.svg"/);
+  assert.match(readme, /alt="TestWeave - Keep manual QA scenarios in step with your code"/);
+});
+
+test('local viewer integrates Woven W mark, responsive horizontal logo and favicon links', () => {
+  // Favicon and manifest in head
+  assert.match(viewerPage, /<link rel="icon" href="\/favicon\.ico" sizes="48x48">/);
+  assert.match(viewerPage, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
+  assert.match(viewerPage, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/);
+  assert.match(viewerPage, /<link rel="manifest" href="\/site\.webmanifest">/);
+  assert.match(viewerPage, /<meta name="theme-color" content="#102C2A">/);
+
+  // Woven W small-cut symbol on dark ink shortcut rail
+  assert.match(viewerPage, /class="rail-brand" href="#main" aria-label="TestWeave workspace"/);
+  assert.match(viewerPage, /<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">/);
+  assert.match(viewerPage, /M16 56H56L88 144L128 56H160L104 200H72Z M156 120L170 144L202 56H240L184 200H152L136 172Z/);
+
+  // Horizontal logo on light header with accessible text
+  assert.match(viewerPage, /<div class="brand"><img src="\/assets\/testweave-horizontal-color\.svg" alt="TestWeave" class="brand-logo" width="121" height="28"><\/div>/);
+
+  // Styles: dark rail uses ink background and mint color; logo is responsive
+  assert.match(viewerStyles, /\.icon-rail \.rail-brand\{[^}]*background:#102C2A/);
+  assert.match(viewerStyles, /\.icon-rail \.rail-brand\{[^}]*color:#65DEC0/);
+  assert.match(viewerStyles, /\.brand-logo\{height:28px/);
+  assert.match(viewerStyles, /\.workspace-header \.brand-logo\{height:24px/);
+});
+
+test('package.json includes durable assets in npm tarball files list', async () => {
+  const pkg = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')) as { files: string[] };
+  assert.ok(pkg.files.includes('assets'), 'package.json files field must include assets');
+});
+
+test('viewer server safely serves allowlisted logo, favicon and manifest assets', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+
+  // Allowlisted files
+  const assetsToTest = [
+    { path: '/favicon.ico', type: 'image/x-icon' },
+    { path: '/favicon.svg', type: 'image/svg+xml' },
+    { path: '/apple-touch-icon.png', type: 'image/png' },
+    { path: '/icon-192.png', type: 'image/png' },
+    { path: '/icon-512.png', type: 'image/png' },
+    { path: '/maskable-512.png', type: 'image/png' },
+    { path: '/site.webmanifest', type: 'application/manifest+json' },
+    { path: '/assets/testweave-horizontal-color.svg', type: 'image/svg+xml' },
+    { path: '/assets/testweave-horizontal-dark.svg', type: 'image/svg+xml' },
+    { path: '/assets/testweave-symbol-small.svg', type: 'image/svg+xml' },
+  ];
+
+  for (const asset of assetsToTest) {
+    const res = await fetch(viewer.url + asset.path);
+    assert.equal(res.status, 200, `Asset ${asset.path} must return 200`);
+    assert.match(res.headers.get('content-type')!, new RegExp(asset.type.replace('+', '\\+')));
+    assert.ok(Number(res.headers.get('content-length') ?? '1') > 0);
+  }
+
+  // CSP header checks
+  const rootRes = await fetch(viewer.url + '/');
+  const csp = rootRes.headers.get('content-security-policy') ?? '';
+  assert.match(csp, /img-src 'self' data:/, 'CSP allows self and data images');
+  assert.match(csp, /manifest-src 'self'/, 'CSP allows self manifest');
+
+  // Boundary checks: unallowlisted paths return 404
+  const unallowlisted = await fetch(viewer.url + '/assets/other-file.txt');
+  assert.equal(unallowlisted.status, 404);
+
+  // Path traversal attempt returns 400 or 404
+  const traversal = await fetch(viewer.url + '/assets/../package.json');
+  assert.ok([400, 404].includes(traversal.status));
+
+  // Query parameter pollution returns 400
+  const polluted = await fetch(viewer.url + '/assets/testweave-horizontal-color.svg?injection=true');
+  assert.equal(polluted.status, 400);
 });
 ````
 
@@ -6338,6 +7946,17 @@ test('fixtures expand recursively only at export and reject missing/cyclic defin
   assert.throws(() => expandFixtures({ ...contract, fixtures: { setup: '{{fixture.standardUser}}'.repeat(100), standardUser: 'a'.repeat(1000) } }), /20,000/);
 });
 
+test('repository QA definitions export without unresolved fixture references', async () => {
+  const contract = parseTestTruth(await readFile(new URL('../test-truth.md', import.meta.url), 'utf8'));
+  const count = contract.modules.reduce((total, module) => total + module.tests.length, 0);
+  assert.ok(count > 0);
+  for (const target of ['xray', 'zephyr', 'jira', 'testrail', 'qase', 'obsidian', 'checklist'] as const) {
+    const artifact = generateExport(contract, { target, format: 'json', projectKey: 'QA' });
+    assert.equal(artifact.testCount, count, target);
+    assert.ok(artifact.content.length > 0, target);
+  }
+});
+
 test('strict provider nullable NFT metadata normalizes before canonical validation', async () => {
   const author = new ValidatedModuleAuthor({ generate: async () => ({ ...moduleFixture, docs: null, specs: null,
     tests: [{ ...moduleFixture.tests[0], type: 'accessibility', refs: null,
@@ -6555,7 +8174,7 @@ test('CLI registers v0.8 import and filter options and dispatches actual argumen
   await createProgram().parseAsync(['node', 'testweave', '--cwd', root, 'generate', '--target', 'checklist', '--module', 'auth',
     '--priority', 'high', '--tags', 'smoke', '--output', 'qa.md']);
   assert.match(await readFile(path.join(root, 'qa.md'), 'utf8'), /\[ \] AUTH-001/);
-  assert.equal(createProgram().version(), '0.8.0');
+  assert.equal(createProgram().version(), '1.0.0');
 });
 
 test('MCP exports new targets with filters and Git changed-since context through the protocol', async (t) => {
@@ -6576,6 +8195,952 @@ test('MCP exports new targets with filters and Git changed-since context through
   }
   const result = await client.callTool({ name: 'generate_qa_export', arguments: { target: 'graph', changedSince: 'invalid-ref' } });
   assert.equal(result.isError, true);
+});
+````
+
+````tests/v090-diff.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { simpleGit } from 'simple-git';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { diffContracts } from '../src/engine/diff.js';
+import { serializeTestTruth } from '../src/engine/markdown.js';
+import { createTestTruth, testTruthSchema } from '../src/schema/test-truth.js';
+import { createContext } from '../src/cli/context.js';
+import { loadContractDiff, runDiff } from '../src/cli/diff.js';
+import { formatContractDiff, githubAnnotation } from '../src/cli/format-diff.js';
+import { runSync } from '../src/cli/sync.js';
+
+test('semantic diff compares stable IDs and meaningful fields without ordering/default noise', () => {
+  const before = contractFixture();
+  before.modules[0]!.paths.push('lib/**');
+  before.modules[0]!.tests.push({ ...structuredClone(moduleFixture.tests[0]!), id: 'AUTH-002' });
+  before.modules.push({ ...structuredClone(moduleFixture), id: 'other', tests: [{ ...structuredClone(moduleFixture.tests[0]!), id: 'OTHER-001' }] });
+  const after = structuredClone(before);
+  after.schemaVersion = 1;
+  after.modules.reverse();
+  after.modules[1]!.paths.reverse();
+  after.modules[1]!.tests.reverse();
+  after.modules[1]!.docs = [];
+  after.policy.docDriftMode = 'warn';
+  assert.deepEqual(diffContracts(before, after).changes, []);
+  after.schemaVersion = 2;
+  after.modules[1]!.tests[0]!.profile = { keyboard: [] };
+  assert.deepEqual(diffContracts(before, after).changes, []);
+  after.modules[1]!.paths = ['new/**'];
+  after.modules[1]!.specs = ['docs/spec.md#login'];
+  after.modules[1]!.tests[0]!.steps[0]!.expected = 'New outcome';
+  after.modules[1]!.tests[0]!.profile = { keyboard: ['Tab reaches submit'] };
+  after.project = 'Changed';
+  after.fixtures = { user: 'standard user' };
+  const changes = diffContracts(before, after).changes;
+  assert.deepEqual(changes.map((entry) => entry.field).sort(), ['fixtures', 'paths', 'profile', 'project', 'specs', 'steps']);
+  assert.deepEqual(changes.find((entry) => entry.field === 'steps')?.before, moduleFixture.tests[0]!.steps);
+  assert.equal(changes.find((entry) => entry.field === 'profile')?.testId, 'AUTH-002');
+  assert.deepEqual(JSON.parse(JSON.stringify(diffContracts(before, after))), diffContracts(before, after));
+  const defaults = contractFixture();
+  defaults.modules[0]!.tests[0] = { ...defaults.modules[0]!.tests[0]!, type: 'regression', tags: [], preconditions: [] };
+  const minimal = testTruthSchema.parse({ ...defaults, modules: [{ ...defaults.modules[0], tests: [{
+    id: 'AUTH-001', title: 'Sign in', priority: 'high', steps: moduleFixture.tests[0]!.steps,
+  }] }] });
+  assert.deepEqual(diffContracts(defaults, minimal).changes, []);
+});
+
+test('diff reports module/test additions, removals, moves and ordered steps', () => {
+  const before = contractFixture();
+  const after = contractFixture();
+  after.modules[0]!.tests[0]!.id = 'AUTH-NEW';
+  let changes = diffContracts(before, after).changes;
+  assert.deepEqual(changes.map(({ kind, testId }) => [kind, testId]), [['removed', 'AUTH-001'], ['added', 'AUTH-NEW']]);
+  after.modules[0]!.id = 'new-module';
+  after.modules[0]!.tests[0]!.id = 'AUTH-001';
+  changes = diffContracts(before, after).changes;
+  assert.deepEqual(changes.map(({ kind, field }) => [kind, field]), [['removed', 'module'], ['added', 'module'], ['modified', 'moduleId']]);
+  assert.equal(changes[2]!.before, 'auth');
+  before.modules[0]!.tests[0]!.steps.push({ action: 'Sign out', data: '', expected: 'Signed out' });
+  after.modules[0]!.id = 'auth';
+  after.modules[0]!.tests[0]!.steps = [...before.modules[0]!.tests[0]!.steps].reverse();
+  assert.equal(diffContracts(before, after).changes[0]!.field, 'steps');
+  assert.equal(diffContracts(before, undefined).changes.filter((entry) => entry.kind === 'removed').length, 2);
+});
+
+test('loader compiles base and target includes from their own Git snapshots', async (t) => {
+  const { root, git, context } = await repositoryFixture(t);
+  const contract = createTestTruth('Fixture');
+  contract.includes = ['packages/auth/test-truth.md'];
+  await mkdir(path.join(root, 'packages/auth'), { recursive: true });
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), serializeTestTruth(contractFixture()));
+  await git.add('.'); await git.commit('Split contract');
+  const base = (await git.revparse(['HEAD'])).trim();
+  const child = contractFixture();
+  child.modules[0]!.tests[0]!.steps[0]!.expected = 'Committed outcome';
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), serializeTestTruth(child));
+  await git.add('.'); await git.commit('Change included test');
+  const target = (await git.revparse(['HEAD'])).trim();
+  child.modules[0]!.tests[0]!.steps[0]!.expected = 'Dirty outcome';
+  await writeFile(path.join(root, 'packages/auth/test-truth.md'), serializeTestTruth(child));
+  const pushed = await loadContractDiff(context, base, target);
+  assert.equal(pushed.changes.length, 1);
+  assert.match(JSON.stringify(pushed.changes[0]!.after), /Committed outcome/);
+  assert.doesNotMatch(JSON.stringify(pushed), /Dirty outcome/);
+  assert.match(JSON.stringify(await loadContractDiff(context, base)), /Dirty outcome/);
+  await assert.rejects(loadContractDiff(context, 'invalid-revision'));
+});
+
+test('implicit HEAD supports unborn Git but explicit revisions still fail', async (t) => {
+  const root = await temporaryDirectory(t);
+  await simpleGit(root).init();
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contractFixture()));
+  const context = await createContext(root);
+  assert.equal((await loadContractDiff(context)).changes.filter((entry) => entry.kind === 'added').length, 2);
+  await assert.rejects(loadContractDiff(context, 'HEAD'));
+  await assert.rejects(loadContractDiff(context, 'invalid-revision'));
+});
+
+test('CLI emits text, markdown, JSON and escaped GitHub semantic output', async (t) => {
+  const { root, context, output } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.modules[0]!.tests[0]!.title = 'Title | <script> `code`\n::error::injected%';
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  for (const format of ['text', 'markdown', 'json', 'github']) {
+    output.length = 0;
+    assert.equal(await runDiff(context, { format }), 0);
+    if (format === 'json') assert.equal(JSON.parse(output[0]!).changes[0].field, 'title');
+    if (format === 'markdown') {
+      assert.match(output[0]!, /&#124; &lt;script&gt; &#96;code&#96;/);
+      assert.doesNotMatch(output[0]!, /<script>/);
+    }
+    if (format === 'github') assert.match(output[0]!, /^::notice file=test-truth.md::/);
+  }
+  await assert.rejects(runDiff(context, { format: 'invalid' }), /Unsupported/);
+  assert.equal(formatContractDiff(diffContracts(contract, contract), 'text').includes('No semantic'), true);
+  assert.equal(githubAnnotation('error', 'a%,:\r\n.ts', 'message%\r\n::error::injected'),
+    '::error file=a%25%2C%3A%0D%0A.ts::message%25%0D%0A::error::injected');
+});
+
+test('GitHub sync preserves blocking verdict and appends combined summaries for committed pre-push targets', async (t) => {
+  const { root, git, base, context, output } = await repositoryFixture(t);
+  const summaryFile = path.join(root, 'summary.md');
+  const oldSummary = process.env.GITHUB_STEP_SUMMARY;
+  process.env.GITHUB_STEP_SUMMARY = summaryFile;
+  t.after(() => { if (oldSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY; else process.env.GITHUB_STEP_SUMMARY = oldSummary; });
+  await writeFile(summaryFile, 'Previous summary\n');
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;\n');
+  await git.add('.'); await git.commit('Behavior change without QA');
+  const target = (await git.revparse(['HEAD'])).trim();
+  const dirty = contractFixture();
+  dirty.modules[0]!.tests[0]!.steps[0]!.expected = 'Dirty test update';
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(dirty));
+  assert.equal(await runSync(context, { prePush: true, format: 'github' }, `refs/heads/main ${target} refs/heads/main ${base}\n`), 1);
+  assert.match(output.join('\n'), /::error file=src\/auth\/login.ts::stale-module auth:/);
+  let summary = await readFile(summaryFile, 'utf8');
+  assert.match(summary, /^Previous summary/);
+  assert.match(summary, /Drift status: \*\*blocked\*\*/);
+  assert.match(summary, /Semantic contract diff/);
+  assert.doesNotMatch(summary, /Dirty test update/);
+  assert.equal(await runSync(context, { prePush: true, format: 'github', base }, `refs/heads/main ${target} refs/heads/new ${'0'.repeat(40)}\n`), 1);
+  summary = await readFile(summaryFile, 'utf8');
+  assert.equal(summary.split('## TestWeave QA review').length, 3);
+  assert.equal(await runSync(context, { prePush: true, format: 'github' }, `(delete) ${'0'.repeat(40)} refs/heads/main ${base}\n`), 0);
+});
+
+test('GitHub first push handles empty base and includes semantic changes without changing warn exit behavior', async (t) => {
+  const { root, git, context, output } = await repositoryFixture(t);
+  const summaryFile = path.join(root, 'summary.md');
+  const oldSummary = process.env.GITHUB_STEP_SUMMARY;
+  process.env.GITHUB_STEP_SUMMARY = summaryFile;
+  t.after(() => { if (oldSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY; else process.env.GITHUB_STEP_SUMMARY = oldSummary; });
+  const contract = contractFixture();
+  contract.policy.mode = 'warn';
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  await writeFile(path.join(root, 'src/unmapped.ts'), 'export const value = 1;\n');
+  await git.add('.'); await git.commit('Warning policy');
+  const target = (await git.revparse(['HEAD'])).trim();
+  assert.equal(await runSync(context, { prePush: true, format: 'github' }, `refs/heads/main ${target} refs/heads/main ${'0'.repeat(40)}\n`), 0);
+  assert.match(output.join('\n'), /::warning file=src\/unmapped.ts::unmapped/);
+  assert.match(await readFile(summaryFile, 'utf8'), /added \| test \| AUTH-001/);
+});
+````
+
+````tests/v090-page.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Script, createContext } from 'node:vm';
+import { viewerPage } from '../src/ui/page.js';
+import { generateExport } from '../src/integrations/exporters.js';
+import { contractFixture } from './helpers.js';
+
+test('viewer embeds valid standalone browser JavaScript and no remote assets', () => {
+  const scripts = [...viewerPage.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new Script(scripts[0]![1]!));
+  assert.doesNotMatch(viewerPage, /(?:src|href)=["']https?:\/\//);
+  assert.doesNotMatch(scripts[0]![1]!, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(/);
+  assert.match(scripts[0]![1]!, /textContent/);
+  assert.match(scripts[0]![1]!, /addEventListener\('reload'/);
+});
+
+test('viewer provides the redesigned local shell and five accessible views with compact filters', () => {
+  assert.match(viewerPage, /<html lang="en">/);
+  assert.match(viewerPage, /class="skip" href="#main"/);
+  assert.match(viewerPage, /aria-label="Workspace shortcuts"/);
+  assert.match(viewerPage, /:focus-visible/);
+  assert.match(viewerPage, /prefers-reduced-motion/);
+  assert.match(viewerPage, /aria-live="polite"/);
+  assert.match(viewerPage, /role="alert"/);
+  assert.match(viewerPage, /<nav aria-label="Viewer sections" role="tablist">/);
+  assert.match(viewerPage, /<details id="secondary-filters" class="advanced-filters" open><summary>Filters<\/summary>/);
+  assert.match(viewerPage, /<div class="filter-primary"><label>Search<input id="search"/);
+  assert.match(viewerPage, /<caption>Ordered steps with browser-local Pass\/Fail and comments\./);
+  assert.doesNotMatch(viewerPage, /<div class="view-heading"><div><h2>(?:Manual QA test document|Contract changes)<\/h2>/);
+  assert.match(viewerPage, /<details id="export-bar"/);
+  for (const view of ['catalog', 'table', 'drift', 'graph', 'diff']) {
+    assert.match(viewerPage, new RegExp('<button type="button" role="tab" id="tab-' + view + '" aria-controls="view-' + view + '"[^>]*data-view="' + view + '"'));
+    assert.match(viewerPage, new RegExp('id="view-' + view + '"'));
+  }
+  for (const id of ['module', 'type', 'priority', 'kind', 'tags', 'fixture', 'spec', 'search', 'assessment']) {
+    assert.match(viewerPage, new RegExp('<label>[^<]+<(?:input|select) id="' + id + '"'));
+  }
+  assert.match(viewerPage, /<select id="assessment"><option value="">All assessments<\/option><option value="unassessed">Unassessed<\/option><option value="pass">Pass<\/option><option value="fail">Fail<\/option><option value="commented">Commented<\/option><\/select>/);
+  assert.match(viewerPage, /class="table-wrap" role="region" aria-label="Test document table" tabindex="0"/);
+  for (const headerId of ['th-id', 'th-title', 'th-pre', 'th-steps', 'th-step-num', 'th-action', 'th-data', 'th-expected', 'th-priority', 'th-status', 'th-comment']) {
+    assert.match(viewerPage, new RegExp('id="' + headerId + '"'));
+  }
+  assert.match(viewerPage, /aria-pressed/);
+  assert.match(viewerPage, /id="impact-form"/);
+  assert.match(viewerPage, /'xray','zephyr','jira','testrail','qase','obsidian','checklist'/);
+  assert.match(viewerPage, /snapshot retained/);
+});
+
+test('viewer renders hostile text, semantic diff, neighbors, test-document table and persistent filters without HTML parsing', async () => {
+  const measuredHeights: Record<string, number> = {};
+  let graphVisible = true;
+  class Node {
+    tag = '';
+    id = '';
+    children: Node[] = [];
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    attributes: Record<string, string> = {};
+    value = '';
+    textContent = '';
+    className = '';
+    hidden = false;
+    disabled = false;
+    tabIndex = 0;
+    open = false;
+    clientWidth = 0;
+    clientHeight = 0;
+    scrollLeft = 0;
+    scrollTop = 0;
+    parentElement?: Node;
+    namespaceURI = 'http://www.w3.org/2000/svg';
+    onchange?: () => void;
+    oninput?: () => void;
+    onclick?: () => void;
+    onkeydown?: (event: { key: string; preventDefault(): void }) => void;
+    constructor(tag = 'div') { this.tag = tag; }
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    replaceChildren(...nodes: Node[]) { this.children = nodes; }
+    setAttribute(key: string, value: string) { this.attributes[key] = value; }
+    getAttribute(key: string) { return this.attributes[key]; }
+    removeAttribute(key: string) { delete this.attributes[key]; }
+    addEventListener() {}
+    focus() {}
+    get offsetHeight() { return graphVisible ? measuredHeights[this.dataset.nodeId ?? ''] ?? 56 : 0; }
+    get offsetWidth() { return 220; }
+    get childNodes() { return this.children; }
+  }
+  const nodes = new Map<string, Node>();
+  const storage = new Map<string, string>();
+  const localStorage = {
+    getItem(key: string) { return storage.get(key) ?? null; },
+    setItem(key: string, value: string) { storage.set(key, value); },
+    removeItem(key: string) { storage.delete(key); },
+  };
+  const navButtons = ['catalog', 'table', 'drift', 'graph', 'diff'].map((view) => {
+    const button = new Node('button');
+    button.dataset.view = view;
+    return button;
+  });
+  const graphCanvas = new Node('div');
+  graphCanvas.clientWidth = 480;
+  graphCanvas.clientHeight = 360;
+  let wideViewport = false;
+  let onMediaChange: (() => void) | undefined;
+  const mediaQuery = {
+    get matches() { return wideViewport; },
+    addEventListener(_event: string, listener: () => void) { onMediaChange = listener; },
+  };
+  const document = {
+    getElementById(id: string) {
+      if (!nodes.has(id)) {
+        const node = new Node();
+        node.id = id;
+        if (id === 'graph') { node.clientWidth = 1168; node.parentElement = graphCanvas; }
+        nodes.set(id, node);
+      }
+      return nodes.get(id)!;
+    },
+    createElement(tag: string) { return new Node(tag); },
+    createElementNS(_ns: string, tag: string) { return new Node(tag); },
+    querySelectorAll(selector: string) { return selector === '[data-view]' ? navButtons : []; },
+  };
+  const script = viewerPage.match(/<script>([\s\S]*?)<\/script>/)![1]!;
+  const context = createContext({ document, URLSearchParams, localStorage, window: { matchMedia: () => mediaQuery, addEventListener() {} } });
+  new Script(script.slice(0, script.indexOf('load();'))).runInContext(context);
+  const hostile = '<img src=x onerror=alert(1)>';
+  const canonicalContract = contractFixture();
+  const snapshotBefore = JSON.stringify(canonicalContract);
+  context.fixture = {
+    contract: { project: hostile, modules: [{ id: 'auth', name: hostile, paths: ['src/auth.ts'], tests: [{
+      id: 'AUTH-1', title: hostile, priority: 'high', type: 'security', tags: ['smoke'],
+      preconditions: [hostile, 'Second precondition'],
+      steps: [
+        { action: hostile, data: 'fixture:user', expected: hostile },
+        { action: 'Second step action', data: '', expected: 'Second step expected' },
+      ],
+      refs: ['docs/auth.md#login'], profile: { checklist: [hostile] },
+    }] }] },
+    graph: { nodes: [{ id: 'module:auth', kind: 'module', label: hostile }, { id: 'test:AUTH-1', kind: 'test', label: 'Login' }],
+      edges: [{ source: 'module:auth', target: 'test:AUTH-1', relation: 'defines' }] },
+    drift: { issues: [{ kind: 'stale-module', message: hostile, files: ['src/auth.ts'] }] },
+    diagnostics: [{ id: 'dead-path', ok: false, message: hostile }],
+    diff: { base: 'HEAD', target: 'working-tree', changes: [{ kind: 'modified', entity: 'test', moduleId: 'auth', testId: 'AUTH-1', field: 'steps', before: 'old', after: hostile }] },
+  };
+  new Script('state=fixture;render();').runInContext(context);
+  const disclosure = nodes.get('secondary-filters')!;
+  assert.equal(disclosure.open, false, 'secondary filters start collapsed at narrow widths');
+  nodes.get('module')!.value = 'auth';
+  nodes.get('tags')!.value = 'smoke';
+  wideViewport = true;
+  onMediaChange!();
+  assert.equal(disclosure.open, true, 'secondary filters open at desktop widths');
+  assert.equal(nodes.get('module')!.value, 'auth');
+  assert.equal(nodes.get('tags')!.value, 'smoke');
+  wideViewport = false;
+  onMediaChange!();
+  assert.equal(disclosure.open, false, 'secondary filters collapse on return to narrow widths');
+  assert.equal(nodes.get('module')!.value, 'auth');
+  assert.equal(nodes.get('tags')!.value, 'smoke');
+  const texts = (node: Node): string => node.textContent + node.children.map(texts).join('\n');
+  for (const id of ['scenario-detail', 'table-body', 'issues', 'diagnostics', 'node-detail', 'diff-content']) {
+    assert.ok(texts(nodes.get(id)!).includes(hostile), id);
+  }
+  const findAll = (root: Node, predicate: (node: Node) => boolean): Node[] =>
+    [...(predicate(root) ? [root] : []), ...root.children.flatMap((child) => findAll(child, predicate))];
+
+  const tableBody = nodes.get('table-body')!;
+  assert.equal(tableBody.children.length, 3, '1 module group header row + 2 ordered step rows');
+  const groupHeader = tableBody.children[0]!.children[0]!;
+  assert.equal(groupHeader.getAttribute('scope'), 'colgroup');
+  assert.equal(groupHeader.getAttribute('colspan'), '10');
+  const firstStepRow = tableBody.children[1]!;
+  const secondStepRow = tableBody.children[2]!;
+  const idHeader = firstStepRow.children[0]!;
+  assert.equal(idHeader.tag, 'th');
+  assert.equal(idHeader.getAttribute('scope'), 'row');
+  assert.equal(idHeader.getAttribute('rowspan'), '2');
+  assert.equal(idHeader.getAttribute('headers'), 'th-mod-1 th-id');
+  assert.match(firstStepRow.children[4]!.getAttribute('headers')!, /th-steps th-action/);
+  assert.match(firstStepRow.children[5]!.getAttribute('headers')!, /th-steps th-data/);
+  assert.match(firstStepRow.children[6]!.getAttribute('headers')!, /th-steps th-expected/);
+  assert.equal(secondStepRow.children.length, 4, 'continuation step row contains only step #, action, data, expected');
+  assert.equal(secondStepRow.children[2]!.textContent, 'None');
+
+  // Verify Pass/Fail and comment controls start unassessed and remain isolated in browser-local storage
+  const selects = findAll(tableBody, (node) => node.tag === 'select');
+  const textareas = findAll(tableBody, (node) => node.tag === 'textarea');
+  assert.equal(selects.length, 1);
+  assert.equal(textareas.length, 1);
+  assert.equal(selects[0]!.value, '', 'starts unassessed');
+  assert.deepEqual(selects[0]!.children.map((opt) => [opt.value, opt.textContent]), [
+    ['', 'Unassessed'],
+    ['pass', 'Pass'],
+    ['fail', 'Fail'],
+  ]);
+  assert.match(texts(nodes.get('annotation-summary')!), /all unassessed/);
+
+  selects[0]!.value = 'pass';
+  selects[0]!.onchange!();
+  textareas[0]!.value = 'Verified on local loopback build';
+  textareas[0]!.oninput!();
+
+  assert.equal(firstStepRow.className, 'row-pass');
+  assert.equal(secondStepRow.className, 'row-pass');
+  assert.match(texts(nodes.get('annotation-summary')!), /1 pass · 0 fail · 1 commented/);
+  const stored = JSON.parse(storage.get('testweave.localAnnotations.v1')!) as Record<string, { status: string; comment: string }>;
+  assert.deepEqual(stored, { 'AUTH-1': { status: 'pass', comment: 'Verified on local loopback build' } });
+
+  // Contract state in memory, canonical fixture, and exports are never mutated by local annotations
+  const contractInState = new Script('JSON.stringify(state.contract)').runInContext(context) as string;
+  assert.doesNotMatch(contractInState, /Verified on local loopback build|"status":"pass"/);
+  assert.equal(JSON.stringify(canonicalContract), snapshotBefore);
+  const exportedChecklist = generateExport(canonicalContract, { target: 'checklist', format: 'markdown' });
+  assert.doesNotMatch(exportedChecklist.content, /Verified on local loopback build|pass/i);
+  const exportHrefs = nodes.get('exports')!.children.map((link) => link.attributes.href ?? '').join('\n');
+  assert.doesNotMatch(exportHrefs, /status|comment|pass|fail/i);
+
+  const assessment = nodes.get('assessment')!;
+  const checkAssessment = (value: string, visible: boolean) => {
+    assessment.value = value;
+    new Script('renderCatalog();').runInContext(context);
+    assert.equal(tableBody.children.length, visible ? 3 : 1, `${value} table filter`);
+    assert.equal(nodes.get('catalog-list')!.children.length, 1, `${value} catalog filter`);
+    assert.match(texts(nodes.get('catalog-list')!), visible ? /AUTH-1/ : /No scenarios match/);
+  };
+  checkAssessment('pass', true);
+  checkAssessment('fail', false);
+  checkAssessment('unassessed', false);
+  checkAssessment('commented', true);
+  selects[0]!.value = 'fail';
+  selects[0]!.onchange!();
+  checkAssessment('fail', true);
+  checkAssessment('pass', false);
+  selects[0]!.value = '';
+  selects[0]!.onchange!();
+  checkAssessment('unassessed', true);
+  textareas[0]!.value = '';
+  textareas[0]!.oninput!();
+  checkAssessment('commented', false);
+  assessment.value = '';
+  new Script('renderCatalog();').runInContext(context);
+  textareas[0]!.value = 'Verified on local loopback build';
+  textareas[0]!.oninput!();
+
+  // Every tab selects its matching panel; filters and exports stay with catalog/table views.
+  const views = ['catalog', 'table', 'drift', 'graph', 'diff'];
+  for (const view of views) {
+    new Script(`showView('${view}');`).runInContext(context);
+    for (const name of views) assert.equal(nodes.get('view-' + name)!.hidden, name !== view, name + ' panel');
+    const activeTab = navButtons.find((button) => button.dataset.view === view)!;
+    assert.equal(activeTab.getAttribute('aria-selected'), 'true', view + ' selected tab');
+    assert.equal(activeTab.tabIndex, 0, view + ' tab stop');
+    assert.equal(nodes.get('filters')!.hidden, !['catalog', 'table'].includes(view), view + ' filter visibility');
+    assert.equal(nodes.get('export-bar')!.hidden, !['catalog', 'table'].includes(view), view + ' export visibility');
+  }
+  navButtons[1]!.onkeydown!({ key: 'ArrowRight', preventDefault() {} });
+  assert.equal(nodes.get('view-drift')!.hidden, false);
+  assert.equal(navButtons[2]!.getAttribute('aria-selected'), 'true');
+  assert.equal(nodes.get('filters')!.hidden, true, 'filters hide in non-catalog/table views');
+
+  // First click arms confirmation; only the second click removes local notes.
+  const clearButton = nodes.get('clear-annotations')!;
+  clearButton.onclick!();
+  assert.ok(storage.has('testweave.localAnnotations.v1'));
+  assert.equal(clearButton.dataset.armed, 'true');
+  assert.match(clearButton.textContent, /Confirm clear notes/);
+  clearButton.onclick!();
+  assert.equal(storage.get('testweave.localAnnotations.v1'), undefined);
+  assert.equal(clearButton.dataset.armed, undefined);
+  assert.equal(clearButton.textContent, 'Clear local notes');
+  assert.match(texts(nodes.get('annotation-summary')!), /all unassessed/);
+
+  assert.match(texts(nodes.get('diff-content')!), /auth \/ AUTH-1 \/ steps/);
+  assert.match(texts(nodes.get('node-detail')!), /defines · Login/);
+
+  // Coverage graph uses spacious layout, smooth Bézier curves, and line isolation
+  const graphNode = nodes.get('graph')!;
+  const svgNode = graphNode.children.find((c) => c.tag === 'svg')!;
+  assert.match(svgNode.getAttribute('viewBox')!, /^0 0 [1-9]\d*(?:\.\d+)? [1-9]\d*(?:\.\d+)?$/);
+  const paths = findAll(svgNode, (c) => c.tag === 'path');
+  assert.equal(paths.length, 1);
+  assert.match(paths[0]!.getAttribute('d')!, /^M \d+ \d+ C \d+(?:\.\d+)? \d+, \d+(?:\.\d+)? \d+, \d+ \d+$/);
+  assert.equal(paths[0]!.getAttribute('class'), 'graph-edge edge-active');
+
+  // Clearing selection isolates view and removes all confusing lines
+  nodes.get('graph-clear-sel')!.onclick!();
+  assert.match(texts(nodes.get('node-detail')!), /Select a coverage node to inspect/);
+  const svgAfterClear = graphNode.children.find((c) => c.tag === 'svg')!;
+  const pathsAfterClear = findAll(svgAfterClear, (c) => c.tag === 'path');
+  assert.equal(pathsAfterClear.length, 0, 'zero confusing lines rendered when nothing is selected in isolate mode');
+
+  // Clicking a node selects it; clicking again deselects it
+  const authNodeButton = graphNode.children.find((c) => c.dataset.nodeId === 'module:auth')!;
+  authNodeButton.onclick!();
+  assert.match(texts(nodes.get('node-detail')!), /defines · Login/);
+  authNodeButton.onclick!();
+  assert.match(texts(nodes.get('node-detail')!), /Select a coverage node to inspect/);
+  authNodeButton.onclick!();
+
+  // Graph module filter and node search
+  nodes.get('graph-module')!.value = 'auth';
+  nodes.get('graph-module')!.onchange!();
+  assert.equal(graphNode.children.filter((c) => c.dataset.nodeId).length, 2);
+  nodes.get('graph-search')!.value = 'Login';
+  nodes.get('graph-search')!.oninput!();
+  const loginBtn = graphNode.children.find((c) => c.dataset.nodeId === 'test:AUTH-1')!;
+  assert.doesNotMatch(loginBtn.className, /node-dimmed/);
+  nodes.get('graph-search')!.value = '';
+  nodes.get('graph-search')!.oninput!();
+  nodes.get('graph-module')!.value = '';
+  nodes.get('graph-module')!.onchange!();
+  new Script("selectedNode='test:AUTH-1';showView('graph');").runInContext(context);
+  assert.ok(graphCanvas.scrollLeft > 0, 'narrow graph scroll reveals selected node in the later column');
+  assert.equal(graphNode.children.find((node) => node.dataset.nodeId === 'test:AUTH-1')!.getAttribute('aria-pressed'), 'true');
+  // Browser measurements can exceed the original 78px slot in every column.
+  const longLabel = 'A long multiline graph label that includes the complete scenario title and its metadata without clipping';
+  const tallNodes = ['spec', 'module', 'source', 'test'].flatMap((kind) => [1, 2].map((index) => ({
+    id: kind + ':long-' + index, kind, label: longLabel + index, priority: 'high',
+  })));
+  tallNodes.forEach((node, index) => { measuredHeights[node.id] = 120 + index * 16; });
+  context.tallGraph = {
+    nodes: tallNodes,
+    edges: [
+      { source: 'spec:long-1', target: 'module:long-1', relation: 'specifies' },
+      { source: 'spec:long-2', target: 'module:long-1', relation: 'specifies' },
+      { source: 'module:long-1', target: 'source:long-1', relation: 'covers' },
+      { source: 'module:long-1', target: 'source:long-2', relation: 'covers' },
+      { source: 'module:long-1', target: 'test:long-1', relation: 'defines' },
+      { source: 'module:long-1', target: 'test:long-2', relation: 'defines' },
+    ],
+  };
+  graphVisible = false;
+  new Script("state.graph=tallGraph;selectedNode='module:long-1';renderGraph();").runInContext(context);
+  graphVisible = true;
+  new Script("showView('graph');").runInContext(context);
+  const cards = graphNode.children.filter((node) => node.dataset.nodeId);
+  for (let index = 1; index < cards.length; index++) {
+    const previous = cards[index - 1]!, current = cards[index]!;
+    const previousX = Number.parseFloat(previous.style.left!), currentX = Number.parseFloat(current.style.left!);
+    assert.ok(currentX >= previousX, 'DOM order follows graph columns');
+    if (currentX === previousX) {
+      assert.ok(Number.parseFloat(current.style.top!) >= Number.parseFloat(previous.style.top!) + previous.offsetHeight,
+        current.dataset.nodeId + ' must not overlap the preceding multiline card');
+    }
+  }
+  const measuredSvg = graphNode.children.find((node) => node.tag === 'svg')!;
+  for (const edge of measuredSvg.children) {
+    const source = cards.find((node) => node.dataset.nodeId === edge.getAttribute('data-source'))!;
+    const target = cards.find((node) => node.dataset.nodeId === edge.getAttribute('data-target'))!;
+    const points = edge.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    assert.equal(points.at(-1), Number.parseFloat(target.style.top!) + target.offsetHeight / 2, 'edge lands at measured target center');
+    assert.ok(points[1]! >= Number.parseFloat(source.style.top!) && points[1]! <= Number.parseFloat(source.style.top!) + source.offsetHeight,
+      'edge starts within the measured source card');
+  }
+  assert.ok(Number.parseFloat(graphNode.style.height!) >= Math.max(...cards.map((node) => Number.parseFloat(node.style.top!) + node.offsetHeight)));
+  new Script('state.graph=fixture.graph;renderGraph();').runInContext(context);
+  document.getElementById('module').value = 'auth';
+  document.getElementById('tags').value = 'smoke';
+  new Script('render();').runInContext(context);
+  assert.equal(nodes.get('module')!.value, 'auth');
+  assert.equal(nodes.get('tags')!.value, 'smoke');
+  document.getElementById('search').value = 'does-not-match';
+  new Script('renderCatalog();').runInContext(context);
+  assert.match(texts(nodes.get('catalog-list')!), /No scenarios match/);
+  assert.match(texts(nodes.get('table-body')!), /No scenarios match/);
+  new Script('state={contract:null,drift:null,graph:null,diff:null,diagnostics:null};render();').runInContext(context);
+  assert.match(texts(nodes.get('project')!), /Contract unavailable/);
+  assert.match(texts(nodes.get('diff-content')!), /catalog/);
+  context.fetch = async () => ({ ok: true, json: async () => ({ contract: { modules: 'invalid' }, errors: [{ source: 'git', message: 'No HEAD' }] }) });
+  await new Script('load();').runInContext(context);
+  assert.match(texts(nodes.get('errors')!), /git: No HEAD/);
+  assert.match(texts(nodes.get('errors')!), /Contract is malformed/);
+  context.fetch = async () => { throw new Error('Connection lost'); };
+  await new Script('load();').runInContext(context);
+  assert.match(texts(nodes.get('errors')!), /Connection lost.*Refresh to retry/);
+  assert.match(texts(nodes.get('connection')!), /Unable to refresh/);
+
+  storage.set('testweave.localAnnotations.v1', JSON.stringify({ 'REMOVED-1': { status: 'pass', comment: 'Old note' } }));
+  new Script('state.contract={modules:[]};updateAnnotationSummary();').runInContext(context);
+  assert.equal(clearButton.disabled, false, 'notes for removed IDs can still be cleared');
+  clearButton.onclick!();
+  assert.ok(storage.has('testweave.localAnnotations.v1'), 'orphan clear still requires confirmation');
+  clearButton.onclick!();
+  assert.equal(storage.has('testweave.localAnnotations.v1'), false);
+
+  storage.set('testweave.localAnnotations.v1', JSON.stringify({ 'AUTH-1': { status: 'pass', comment: 'Old note' } }));
+  localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+  new Script("setAnnotation('AUTH-1',{status:'fail',comment:'New note'});").runInContext(context);
+  assert.equal(new Script("getAnnotation('AUTH-1').comment").runInContext(context), 'New note');
+  assert.equal(new Script("getAnnotation('AUTH-1').status").runInContext(context), 'fail');
+  new Script("setAnnotation('AUTH-2',{comment:'Another note'});").runInContext(context);
+  assert.equal(new Script("getAnnotation('AUTH-1').comment").runInContext(context), 'New note', 'later writes retain memory edits');
+  localStorage.removeItem = () => { throw new Error('Storage unavailable'); };
+  clearButton.onclick!();
+  clearButton.onclick!();
+  assert.equal(new Script('Object.keys(readAnnotations()).length').runInContext(context), 0, 'failed removal clears the session copy');
+});
+````
+
+````tests/v090-ui-server.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { request, Server } from 'node:http';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { simpleGit } from 'simple-git';
+import { startUi } from '../src/ui/server.js';
+import { runUi } from '../src/cli/ui.js';
+import { createContext } from '../src/cli/context.js';
+import { contractFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+import { serializeTestTruth } from '../src/engine/markdown.js';
+import { generateExport } from '../src/integrations/exporters.js';
+import type { TestTruth } from '../src/schema/test-truth.js';
+import type { DriftReport } from '../src/engine/drift.js';
+import type { Diagnostic } from '../src/engine/doctor.js';
+import type { ContractGraph } from '../src/integrations/graph.js';
+import type { ContractDiffReport } from '../src/engine/diff.js';
+import type { impact } from '../src/engine/queries.js';
+
+interface ViewerState {
+  contract: TestTruth | null; drift: DriftReport | null; diagnostics: Diagnostic[] | null;
+  graph: ContractGraph | null; diff: ContractDiffReport | null; errors: { source: string; message: string }[];
+}
+
+test('viewer binds loopback and exposes read-only state, impact and filtered downloads', async (t) => {
+  const nodeEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  t.after(() => { if (nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = nodeEnv; });
+  const { context, root } = await repositoryFixture(t);
+  const original = await readFile(path.join(root, 'test-truth.md'), 'utf8');
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+  assert.equal((viewer.server.address() as { address: string }).address, '127.0.0.1');
+  const page = await fetch(viewer.url);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type')!, /text\/html/);
+  assert.doesNotMatch(page.headers.get('content-security-policy')!, /:8400/);
+  assert.match(page.headers.get('content-security-policy')!, /script-src 'unsafe-inline';.*connect-src 'self';/);
+  assert.match(await page.text(), /TestWeave/i);
+  const stateResponse = await fetch(viewer.url + '/api/state');
+  assert.equal(stateResponse.status, 200);
+  const state = await stateResponse.json() as ViewerState;
+  assert.deepEqual(Object.keys(state).sort(), ['contract', 'diagnostics', 'diff', 'drift', 'errors', 'graph']);
+  assert.ok(state.contract && state.drift && state.diff && state.diagnostics && state.graph);
+  assert.equal(state.contract.modules[0]!.id, 'auth');
+  assert.deepEqual(state.drift.changedFiles, []);
+  assert.equal(state.diff.changes.length, 0);
+  assert.ok(state.diagnostics.some((check: { id: string }) => check.id === 'contract'));
+  assert.ok(state.graph.nodes.some((node: { id: string }) => node.id === 'test:AUTH-001'));
+  const preview = await (await fetch(viewer.url + '/api/impact?path=src/auth/new.ts')).json() as Awaited<ReturnType<typeof impact>>;
+  assert.equal(preview.modules[0]!.tests[0]!.id, 'AUTH-001');
+  for (const target of ['xray', 'zephyr', 'jira', 'testrail', 'qase', 'obsidian', 'checklist'] as const) {
+    const response = await fetch(viewer.url + `/api/export?target=${target}&format=json&module=auth&tags=smoke&priority=high&projectKey=QA`);
+    assert.equal(response.status, 200, target);
+    const expected = generateExport(await context.store.read(), { target, format: 'json', module: 'auth', tags: 'smoke', priority: 'high', projectKey: 'QA' });
+    assert.equal(await response.text(), expected.content);
+    assert.equal(response.headers.get('content-disposition'), `attachment; filename="${expected.filename}"`);
+  }
+  const empty = await (await fetch(viewer.url + '/api/export?target=qase&format=json&priority=low')).json() as { cases: unknown[] };
+  assert.deepEqual(empty.cases, []);
+  assert.equal(await readFile(path.join(root, 'test-truth.md'), 'utf8'), original);
+});
+
+test('viewer serves approved logo, favicon and app manifest assets from fixed allowlist', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+
+  const faviconSvg = await fetch(viewer.url + '/favicon.svg');
+  assert.equal(faviconSvg.status, 200);
+  assert.match(faviconSvg.headers.get('content-type')!, /image\/svg\+xml/);
+  const faviconSvgBody = await faviconSvg.text();
+  assert.ok(faviconSvgBody.includes('#087F72'));
+  assert.ok(faviconSvgBody.includes('#65DEC0'));
+
+  const faviconIco = await fetch(viewer.url + '/favicon.ico');
+  assert.equal(faviconIco.status, 200);
+  assert.match(faviconIco.headers.get('content-type')!, /image\/x-icon/);
+
+  const appleTouch = await fetch(viewer.url + '/apple-touch-icon.png');
+  assert.equal(appleTouch.status, 200);
+  assert.match(appleTouch.headers.get('content-type')!, /image\/png/);
+
+  const manifest = await fetch(viewer.url + '/site.webmanifest');
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers.get('content-type')!, /application\/manifest\+json/);
+  const manifestData = await manifest.json() as { name: string; theme_color: string };
+  assert.equal(manifestData.name, 'TestWeave');
+  assert.equal(manifestData.theme_color, '#102C2A');
+
+  const logoColor = await fetch(viewer.url + '/assets/testweave-horizontal-color.svg');
+  assert.equal(logoColor.status, 200);
+  assert.match(logoColor.headers.get('content-type')!, /image\/svg\+xml/);
+  const logoColorBody = await logoColor.text();
+  assert.ok(logoColorBody.includes('#087F72'));
+  assert.ok(logoColorBody.includes('#102C2A'));
+
+  const logoDark = await fetch(viewer.url + '/assets/testweave-horizontal-dark.svg');
+  assert.equal(logoDark.status, 200);
+  assert.match(logoDark.headers.get('content-type')!, /image\/svg\+xml/);
+  const logoDarkBody = await logoDark.text();
+  assert.ok(logoDarkBody.includes('#65DEC0'));
+
+  const symbolSmall = await fetch(viewer.url + '/assets/testweave-symbol-small.svg');
+  assert.equal(symbolSmall.status, 200);
+  assert.match(symbolSmall.headers.get('content-type')!, /image\/svg\+xml/);
+
+  // Rejects unallowlisted paths, invalid query params, and cross-origin access
+  assert.equal((await fetch(viewer.url + '/assets/unknown.svg')).status, 404);
+  assert.equal((await fetch(viewer.url + '/assets/testweave-horizontal-color.svg?unexpected=1')).status, 400);
+  assert.equal((await rawRequest(viewer.url, '/assets/testweave-horizontal-color.svg', { Host: 'evil.example' })).status, 403);
+  assert.equal((await rawRequest(viewer.url, '/assets/testweave-horizontal-color.svg', { Origin: 'https://evil.example' })).status, 403);
+});
+
+function rawRequest(url: string, pathname: string, headers: Record<string, string> = {}, method = 'GET') {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const base = new URL(url);
+    const req = request({ hostname: base.hostname, port: base.port, path: pathname, headers, method }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode!, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('viewer accepts canonical same-origin requests when listening on HTTP port 80', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const address = Server.prototype.address;
+  t.mock.method(Server.prototype, 'address', function (this: Server) {
+    const actual = address.call(this);
+    return actual && typeof actual !== 'string' ? { ...actual, port: 80 } : actual;
+  });
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+  // Advertise port 80 while requests use an ephemeral socket without privileged binding.
+  const actual = address.call(viewer.server) as { port: number };
+  const transport = `http://127.0.0.1:${actual.port}`;
+  assert.equal((await rawRequest(transport, '/', { Host: '127.0.0.1' })).status, 200);
+  assert.equal((await rawRequest(transport, '/api/state', { Host: '127.0.0.1', Origin: 'http://127.0.0.1' })).status, 200);
+  assert.equal((await rawRequest(transport, '/', { Host: '127.0.0.1', Origin: 'https://evil.example' })).status, 403);
+  assert.equal((await rawRequest(transport, '/', { Host: 'evil.example' })).status, 403);
+  assert.equal(viewer.url, 'http://127.0.0.1');
+});
+
+test('viewer rejects cross-origin access, writes, malformed URLs and invalid input', async (t) => {
+  const { context } = await repositoryFixture(t);
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+  assert.equal((await rawRequest(viewer.url, '/api/state', { Host: 'evil.example' })).status, 403);
+  for (const origin of ['https://evil.example', 'null', 'http://localhost:1234']) {
+    assert.equal((await rawRequest(viewer.url, '/api/state', { Origin: origin })).status, 403);
+  }
+  assert.equal((await rawRequest(viewer.url, '/api/state', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await rawRequest(viewer.url, '/api/state', { Origin: viewer.url })).status, 200);
+  for (const method of ['POST', 'PUT', 'DELETE', 'OPTIONS']) assert.equal((await rawRequest(viewer.url, '/api/state', {}, method)).status, 405);
+  for (const route of ['/%', '/%FF', '//evil.example/api/state', 'http://evil.example/api/state',
+    '/api/state?unknown=x', '/api/impact', '/api/impact?path=../secret', '/api/impact?path=C%3Asecret',
+    '/api/export', '/api/export?target=unknown', '/api/export?target=qase&target=xray', '/api/export?target=qase&format=dot',
+    '/api/export?target=jira&format=json', '/api/export?target=jira&projectKey=invalid',
+    '/api/export?target=qase&priority=urgent', '/api/export?target=qase&module=missing', '/api/export?target=qase&tags=%2C',
+    '/api/export?target=qase&module=auth%0D%0AInjected', '/api/export?target=qase&changedSince=HEAD']) {
+    assert.equal((await rawRequest(viewer.url, route)).status, 400, route);
+  }
+  assert.equal((await rawRequest(viewer.url, '/test-truth.md')).status, 404);
+  assert.equal((await rawRequest(viewer.url, '/.git/config')).status, 404);
+  await assert.rejects(startUi(context, { port: -1 }), /Port/);
+  await assert.rejects(startUi(context, { port: 1.2 }), /Port/);
+  await assert.rejects(runUi(context, { port: '' }), /Port/);
+});
+
+test('viewer keeps catalog available outside Git and reports malformed contracts without crashing', async (t) => {
+  const root = await temporaryDirectory(t);
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contractFixture()));
+  const context = await createContext(root);
+  const viewer = await startUi(context);
+  t.after(() => viewer.close());
+  const state = await (await fetch(viewer.url + '/api/state')).json() as ViewerState;
+  assert.equal(state.contract?.modules[0]!.id, 'auth');
+  assert.ok(state.errors.some((error: { source: string }) => error.source === 'drift'));
+  assert.equal((await fetch(viewer.url + '/api/export?target=checklist')).status, 200);
+  await writeFile(path.join(root, 'test-truth.md'), 'malformed contract');
+  const broken = await (await fetch(viewer.url + '/api/state')).json() as ViewerState;
+  assert.equal(broken.contract, null);
+  assert.ok(broken.errors.some((error: { source: string }) => error.source === 'contract'));
+  assert.equal((await fetch(viewer.url + '/api/export?target=qase')).status, 500);
+  assert.equal((await fetch(viewer.url)).status, 200);
+});
+
+test('viewer supports staged and untracked paths before the first Git commit', async (t) => {
+  const root = await temporaryDirectory(t);
+  const git = simpleGit(root);
+  await git.init();
+  await mkdir(path.join(root, 'src/auth'), { recursive: true });
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contractFixture()));
+  await writeFile(path.join(root, 'src/auth/staged.ts'), 'export const staged = 1;');
+  await git.add(['test-truth.md', 'src/auth/staged.ts']);
+  await writeFile(path.join(root, 'src/auth/untracked.ts'), 'export const untracked = 1;');
+  const viewer = await startUi(await createContext(root));
+  t.after(() => viewer.close());
+  const state = await (await fetch(viewer.url + '/api/state')).json() as ViewerState;
+  assert.deepEqual(state.errors, []);
+  assert.ok(state.drift && state.diff);
+  assert.ok(state.drift.changedFiles.includes('src/auth/staged.ts'));
+  assert.ok(state.drift.changedFiles.includes('src/auth/untracked.ts'));
+  assert.ok(state.diff.changes.some((change) => change.kind === 'added' && change.testId === 'AUTH-001'));
+});
+
+test('SSE notices tracked, untracked, ignored included-contract and Git changes, and closes active streams', async (t) => {
+  const { root, context, git } = await repositoryFixture(t);
+  const contract = contractFixture();
+  contract.includes = ['ignored/test-truth.md'];
+  await mkdir(path.join(root, 'ignored'));
+  await writeFile(path.join(root, '.gitignore'), 'ignored/\n');
+  const included = { ...contractFixture(), modules: [] };
+  await writeFile(path.join(root, 'ignored/test-truth.md'), serializeTestTruth(included));
+  await writeFile(path.join(root, 'test-truth.md'), serializeTestTruth(contract));
+  const viewer = await startUi(context, { pollIntervalMs: 25 });
+  t.after(() => viewer.close());
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const response = await fetch(viewer.url + '/events', { signal: controller.signal });
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  async function event(name: string) {
+    const deadline = setTimeout(() => controller.abort(), 5000);
+    try {
+      let content = '';
+      while (!content.includes(`event: ${name}\n`)) {
+        const chunk = await reader.read();
+        assert.equal(chunk.done, false, `stream ended before ${name}`);
+        content += decoder.decode(chunk.value);
+      }
+    } finally { clearTimeout(deadline); }
+  }
+  await event('ready');
+  await writeFile(path.join(root, 'src/auth/login.ts'), 'export const login = 2;\n');
+  await event('reload');
+  await writeFile(path.join(root, 'new-untracked.ts'), 'new file');
+  await event('reload');
+  await writeFile(path.join(root, 'new-untracked.ts'), 'changed untracked file');
+  await event('reload');
+  await writeFile(path.join(root, 'ignored/test-truth.md'), serializeTestTruth(included) + '\nChanged prose\n');
+  await event('reload');
+  await git.checkoutLocalBranch('viewer-test');
+  await event('reload');
+  await git.add('src/auth/login.ts');
+  await event('reload');
+  await viewer.close();
+  assert.equal(viewer.server.listening, false);
+  await viewer.close();
+});
+
+test('runUi logs the URL, stays active and removes signal handlers on shutdown', async (t) => {
+  const { context, output } = await repositoryFixture(t);
+  const beforeInt = process.listenerCount('SIGINT'), beforeTerm = process.listenerCount('SIGTERM');
+  let logged!: () => void;
+  const ready = new Promise<void>((resolve) => { logged = resolve; });
+  const running = runUi({ ...context, output: { ...context.output, log(message) { output.push(message); logged(); } } });
+  await ready;
+  assert.match(output[0]!, /http:\/\/127\.0\.0\.1:\d+/);
+  // runUi attaches handlers immediately after logging, before this microtask resumes.
+  assert.equal(process.listenerCount('SIGINT'), beforeInt + 1);
+  assert.equal(process.listenerCount('SIGTERM'), beforeTerm + 1);
+  process.emit('SIGINT');
+  await running;
+  assert.equal(process.listenerCount('SIGINT'), beforeInt);
+  assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+});
+
+test('closing viewer waits for its in-flight poll and prevents another polling loop', async (t) => {
+  const { context } = await repositoryFixture(t);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const polling = new Promise<void>((resolve) => { entered = resolve; });
+  let pause = false, reads = 0;
+  const original = context.store.readMarkdown.bind(context.store);
+  context.store.readMarkdown = async () => {
+    reads++;
+    if (pause) { entered(); await gate; }
+    return original();
+  };
+  const viewer = await startUi(context, { pollIntervalMs: 10 });
+  t.after(async () => { release(); await viewer.close(); });
+  const response = await fetch(viewer.url + '/events');
+  const reader = response.body!.getReader();
+  await reader.read();
+  pause = true;
+  await polling;
+  let finished = false;
+  const closing = viewer.close().then(() => { finished = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(finished, false, 'close must await pending workspace reads');
+  release();
+  await closing;
+  assert.equal(reads, 2, 'only the initial snapshot and one poll ran');
+  assert.equal(viewer.server.listening, false);
+});
+````
+
+````tests/v100-compatibility.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import {
+  createTestTruth, diagnose, MarkdownContractStore, nodeFileSystem, parseTestTruth,
+  serializeTestTruth, type FileSystem,
+} from '../src/index.js';
+import { contractFixture, moduleFixture, repositoryFixture, temporaryDirectory } from './helpers.js';
+
+test('public API reads and diagnoses v1 without rewriting authored bytes', async (t) => {
+  const { root, context } = await repositoryFixture(t);
+  const legacy = { ...contractFixture(), schemaVersion: 1 as const };
+  const markdown = 'Authored introduction\r\n\r\n' + serializeTestTruth(legacy) + '\nAuthored ending\n';
+  const file = path.join(root, 'test-truth.md');
+  await writeFile(file, markdown);
+  const store = new MarkdownContractStore(root);
+  assert.deepEqual(await store.read(), legacy);
+  assert.equal(await store.initialize(createTestTruth('Replacement')), false);
+  const checks = await diagnose({ ...context, store });
+  assert.equal(checks.find((check) => check.id === 'schema-version')?.ok, false);
+  assert.equal(await readFile(file, 'utf8'), markdown);
+  assert.equal(createTestTruth('New project').schemaVersion, 2);
+});
+
+async function mixedVersionFixture(t: Parameters<typeof temporaryDirectory>[0]) {
+  const root = await temporaryDirectory(t);
+  const childDirectory = path.join(root, 'packages/auth');
+  await mkdir(childDirectory, { recursive: true });
+  const parent = serializeTestTruth({ ...createTestTruth('Root'), includes: ['packages/auth/test-truth.md'] });
+  const legacy = { ...contractFixture(), schemaVersion: 1 as const };
+  const child = 'Package introduction\n\n' + serializeTestTruth(legacy) + '\nPackage ending\n';
+  await writeFile(path.join(root, 'test-truth.md'), parent);
+  await writeFile(path.join(childDirectory, 'test-truth.md'), child);
+  return { root, childDirectory, parent, child, legacy };
+}
+
+test('explicit migration upgrades included v1 definitions without flattening or changing identities', async (t) => {
+  const { root, childDirectory, parent, child, legacy } = await mixedVersionFixture(t);
+  const store = new MarkdownContractStore(root);
+  await store.read();
+  assert.equal(await readFile(path.join(childDirectory, 'test-truth.md'), 'utf8'), child);
+  await store.migrate();
+  assert.equal(await store.readMarkdown(), parent);
+  const migrated = await readFile(path.join(childDirectory, 'test-truth.md'), 'utf8');
+  assert.deepEqual(parseTestTruth(migrated), { ...legacy, schemaVersion: 2 });
+  assert.match(migrated, /^Package introduction\n\n/);
+  assert.match(migrated, /\nPackage ending\n$/);
+  assert.deepEqual((await store.read()).modules[0]!.paths, ['packages/auth/src/auth/**']);
+  await store.migrate();
+  assert.equal(await readFile(path.join(childDirectory, 'test-truth.md'), 'utf8'), migrated);
+});
+
+test('failed included-contract replacement preserves both documents and releases temporary files and locks', async (t) => {
+  const { root, childDirectory, parent, child } = await mixedVersionFixture(t);
+  const failure = new Error('Injected rename failure');
+  const io: FileSystem = { ...nodeFileSystem, rename: async () => { throw failure; } };
+  const store = new MarkdownContractStore(root, io);
+  await assert.rejects(store.migrate(), failure);
+  assert.equal(await store.readMarkdown(), parent);
+  assert.equal(await readFile(path.join(childDirectory, 'test-truth.md'), 'utf8'), child);
+  assert.deepEqual(await readdir(childDirectory), ['test-truth.md']);
+  await assert.rejects(store.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Updated case' }), failure);
+  assert.equal(await store.readMarkdown(), parent);
+  assert.equal(await readFile(path.join(childDirectory, 'test-truth.md'), 'utf8'), child);
+  assert.deepEqual((await readdir(root)).sort(), ['packages', 'test-truth.md']);
+  assert.deepEqual(await readdir(childDirectory), ['test-truth.md']);
+  const healthy = new MarkdownContractStore(root);
+  await healthy.upsertCase('auth', { ...moduleFixture.tests[0]!, title: 'Retry succeeds' });
+  assert.equal((await healthy.read()).modules[0]!.tests[0]!.title, 'Retry succeeds');
 });
 ````
 
@@ -6611,12 +9176,13 @@ import { existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createTestTruth, serializeTestTruth } from '../dist/index.js';
+import { TESTWEAVE_SKILL_FILES } from '../dist/integrations/skills.js';
 
 const exec = promisify(execFile);
 const repository = fileURLToPath(new URL('../', import.meta.url));
@@ -6675,6 +9241,7 @@ const cliPrefix = {
 const cli = (args) => pm([...cliPrefix, ...args]);
 try {
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'testweave-install-fixture', private: true }));
+  await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   if (manager === 'yarn-pnp') {
     await writeFile(path.join(root, '.yarnrc.yml'),
       'nodeLinker: pnp\npnpEnableEsmLoader: true\nenableGlobalCache: false\nenableScripts: false\n');
@@ -6698,6 +9265,43 @@ try {
   await cli(['init', '--yes']);
   const doctor = await cli(['doctor']);
   assert.match(doctor.stdout, /Valid contract/);
+  const skills = path.join(root, '.agents/skills/testweave');
+  const verifySkills = async () => {
+    for (const file of TESTWEAVE_SKILL_FILES) {
+      assert.equal(await readFile(path.join(skills, file.path), 'utf8'), file.content);
+    }
+  };
+  await verifySkills();
+  await writeFile(path.join(skills, 'commands/doctor.md'), 'outdated');
+  await assert.rejects(cli(['doctor', '--json']));
+  await cli(['update', '--yes']);
+  await verifySkills();
+  await cli(['doctor', '--json']);
+  const viewer = spawn(binary, [...prefix, ...cliPrefix, 'ui', '--port', '0'], {
+    cwd: root, env: cleanEnvironment, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
+  });
+  try {
+    const url = await new Promise((resolve, reject) => {
+      let output = '';
+      const timer = setTimeout(() => reject(new Error('Viewer startup timed out')), 30_000);
+      viewer.once('error', (error) => { clearTimeout(timer); reject(error); });
+      viewer.once('exit', (code) => { clearTimeout(timer); reject(new Error('Viewer exited: ' + code)); });
+      viewer.stdout.on('data', (chunk) => {
+        output += chunk;
+        const match = output.match(/TestWeave viewer: (http:\/\/127\.0\.0\.1:\d+)/);
+        if (match) { clearTimeout(timer); resolve(match[1]); }
+      });
+    });
+    for (const route of ['/', '/api/state', '/favicon.ico', '/site.webmanifest', '/assets/testweave-horizontal-color.svg']) {
+      const response = await fetch(url + route, { signal: AbortSignal.timeout(30_000) });
+      assert.equal(response.status, 200, route);
+      assert.ok((await response.arrayBuffer()).byteLength > 0, route);
+    }
+  } finally {
+    // The package manager can retain a child process on Windows; terminate the whole fixture tree.
+    if (process.platform === 'win32' && viewer.pid) await exec('taskkill', ['/pid', String(viewer.pid), '/T', '/F']).catch(() => {});
+    else if (viewer.pid) { try { process.kill(-viewer.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+  }
   const config = JSON.parse(await readFile(path.join(root, '.vscode/mcp.json'), 'utf8')).servers.testweave;
   if (manager === 'yarn-pnp') {
     assert.ok(config.args.includes('--require'));
@@ -6709,7 +9313,6 @@ try {
     await client.connect(transport);
     assert.equal((await client.listTools()).tools.length, 10);
   } finally { await client.close(); }
-  await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   await mkdir(path.join(root, 'src'));
   await writeFile(path.join(root, 'src/app.ts'), 'export const behavior = 1;\n');
   const contract = createTestTruth('Package manager fixture');
@@ -6738,7 +9341,7 @@ try {
   await run('git', ['add', 'test-truth.md']);
   await run('git', ['commit', '-m', 'Update QA']);
   await run('git', ['push', 'origin', 'main']);
-  console.log(manager + ': install, CLI, doctor, standalone MCP, and Git push enforcement passed');
+  console.log(manager + ': install, CLI, skill refresh, doctor, viewer assets, standalone MCP, and Git push enforcement passed');
 } finally {
   const dirParent = path.dirname(directory);
   const resolvedTmp = path.resolve(tmpdir());
@@ -7132,8 +9735,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      packages: write
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -7166,38 +9767,4 @@ jobs:
               --verify-tag --title "TestWeave $RELEASE_TAG" \
               --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
           fi
-      - name: Publish to GitHub Packages
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/gpr"
-          tar -xzf "$RUNNER_TEMP/testweave-"*.tgz -C "$RUNNER_TEMP/gpr"
-          node -e '
-            const fs = require("node:fs");
-            const pkgPath = "'"$RUNNER_TEMP"'/gpr/package/package.json";
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-            pkg.name = "@alexisrellon/testweave";
-            delete pkg.scripts;
-            pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
-            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-          '
-          cd "$RUNNER_TEMP/gpr/package"
-          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
-          publish_args=(--access public --ignore-scripts --registry=https://npm.pkg.github.com)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            publish_args+=(--tag next)
-          fi
-          npm publish "${publish_args[@]}"
-      - name: Install npm CLI for Trusted Publishing
-        run: npm install -g 'npm@>=11.5.1'
-      - name: Publish to npmjs
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          publish_args=(--access public --provenance)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            publish_args+=(--tag next)
-          fi
-          npm publish "$RUNNER_TEMP/testweave-"*.tgz "${publish_args[@]}"
 ````

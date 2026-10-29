@@ -40,8 +40,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      packages: write
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,37 +72,3 @@ jobs:
               --verify-tag --title "TestWeave $RELEASE_TAG" \
               --notes-file "$RUNNER_TEMP/testweave-release-notes.md" "${args[@]}"
           fi
-      - name: Publish to GitHub Packages
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/gpr"
-          tar -xzf "$RUNNER_TEMP/testweave-"*.tgz -C "$RUNNER_TEMP/gpr"
-          node -e '
-            const fs = require("node:fs");
-            const pkgPath = "'"$RUNNER_TEMP"'/gpr/package/package.json";
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-            pkg.name = "@alexisrellon/testweave";
-            delete pkg.scripts;
-            pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
-            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-          '
-          cd "$RUNNER_TEMP/gpr/package"
-          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
-          publish_args=(--access public --ignore-scripts --registry=https://npm.pkg.github.com)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            publish_args+=(--tag next)
-          fi
-          npm publish "${publish_args[@]}"
-      - name: Install npm CLI for Trusted Publishing
-        run: npm install -g 'npm@>=11.5.1'
-      - name: Publish to npmjs
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          publish_args=(--access public --provenance)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            publish_args+=(--tag next)
-          fi
-          npm publish "$RUNNER_TEMP/testweave-"*.tgz "${publish_args[@]}"

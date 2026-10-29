@@ -78,6 +78,7 @@ const TEST_TYPE_SYNONYMS: Record<string, TestType> = {
   uat: 'uat',
   'user acceptance': 'uat',
   'user acceptance testing': 'uat',
+  'user acceptance testing (uat)': 'uat',
   'user-acceptance': 'uat',
   'user-acceptance-testing': 'uat',
   'uat (user acceptance)': 'uat',

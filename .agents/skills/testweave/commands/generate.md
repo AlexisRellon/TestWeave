@@ -7,7 +7,19 @@ testweave generate --target xray --format csv --output qa/xray-tests.csv
 testweave generate --target jira --format json --project-key PROJ
 ```
 
-Targets are `jira`, `xray` and `zephyr`; formats are `csv` and `json`. Defaults are Xray CSV. JSON requires `--project-key`. Omit `--output`, or use `--output -`, for stdout. File output must be within the workspace and cannot overwrite an existing file.
+Targets are `jira`, `xray`, `zephyr`, `testrail`, `qase`, `gherkin`, `checklist`, `obsidian`, `canvas` and `graph`. Defaults are Xray CSV. Jira/Xray/Zephyr JSON requires `--project-key`. Omit `--output`, or use `--output -`, for stdout. File output must be within the workspace and cannot overwrite an existing file.
+
+TestRail/Qase support CSV and JSON definition bundles. Map CSV columns in the destination importer; JSON is a portable TestWeave bundle, not an API upload. Gherkin emits `.feature` text; checklist emits unchecked Markdown. Graph emits JSON by default or accepts `--format mermaid|dot`. Canvas emits JSON Canvas with grouped, priority-colored cards (stale drift is red).
+
+```sh
+testweave generate --target checklist --module authentication --tags smoke,release --priority high
+testweave generate --target testrail --format json --changed-since main
+testweave generate --target graph --format mermaid --output qa/coverage.mmd
+testweave generate --target canvas --output qa/coverage.canvas
+testweave generate --target obsidian --output qa-vault
+```
+
+Filters combine: module ID, all comma-separated tags, exact priority, and modules whose source paths or spec files changed since a Git ref (including working changes). Invalid refs fail. Obsidian output is a directory of generated Markdown notes with YAML frontmatter and bidirectional wikilinks. Repeating projection refreshes managed blocks and preserves outside prose; unmanaged notes are protected. Removed nodes are retained on disk so personal notes are never deleted. Without `--output`, Obsidian emits a JSON filename/content bundle. Projection uses hashed stable filenames to avoid unsafe paths and collisions. Drift is `unknown` without an upstream/ref, otherwise it reports current Git alignment; it never represents execution outcomes.
 
 Exports contain definitions, not execution results. Review the artifact before importing it; generate does not upload cases.
 

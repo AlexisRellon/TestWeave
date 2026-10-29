@@ -3,12 +3,13 @@ import { existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createTestTruth, serializeTestTruth } from '../dist/index.js';
+import { TESTWEAVE_SKILL_FILES } from '../dist/integrations/skills.js';
 
 const exec = promisify(execFile);
 const repository = fileURLToPath(new URL('../', import.meta.url));
@@ -67,6 +68,7 @@ const cliPrefix = {
 const cli = (args) => pm([...cliPrefix, ...args]);
 try {
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'testweave-install-fixture', private: true }));
+  await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   if (manager === 'yarn-pnp') {
     await writeFile(path.join(root, '.yarnrc.yml'),
       'nodeLinker: pnp\npnpEnableEsmLoader: true\nenableGlobalCache: false\nenableScripts: false\n');
@@ -90,6 +92,43 @@ try {
   await cli(['init', '--yes']);
   const doctor = await cli(['doctor']);
   assert.match(doctor.stdout, /Valid contract/);
+  const skills = path.join(root, '.agents/skills/testweave');
+  const verifySkills = async () => {
+    for (const file of TESTWEAVE_SKILL_FILES) {
+      assert.equal(await readFile(path.join(skills, file.path), 'utf8'), file.content);
+    }
+  };
+  await verifySkills();
+  await writeFile(path.join(skills, 'commands/doctor.md'), 'outdated');
+  await assert.rejects(cli(['doctor', '--json']));
+  await cli(['update', '--yes']);
+  await verifySkills();
+  await cli(['doctor', '--json']);
+  const viewer = spawn(binary, [...prefix, ...cliPrefix, 'ui', '--port', '0'], {
+    cwd: root, env: cleanEnvironment, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
+  });
+  try {
+    const url = await new Promise((resolve, reject) => {
+      let output = '';
+      const timer = setTimeout(() => reject(new Error('Viewer startup timed out')), 30_000);
+      viewer.once('error', (error) => { clearTimeout(timer); reject(error); });
+      viewer.once('exit', (code) => { clearTimeout(timer); reject(new Error('Viewer exited: ' + code)); });
+      viewer.stdout.on('data', (chunk) => {
+        output += chunk;
+        const match = output.match(/TestWeave viewer: (http:\/\/127\.0\.0\.1:\d+)/);
+        if (match) { clearTimeout(timer); resolve(match[1]); }
+      });
+    });
+    for (const route of ['/', '/api/state', '/favicon.ico', '/site.webmanifest', '/assets/testweave-horizontal-color.svg']) {
+      const response = await fetch(url + route, { signal: AbortSignal.timeout(30_000) });
+      assert.equal(response.status, 200, route);
+      assert.ok((await response.arrayBuffer()).byteLength > 0, route);
+    }
+  } finally {
+    // The package manager can retain a child process on Windows; terminate the whole fixture tree.
+    if (process.platform === 'win32' && viewer.pid) await exec('taskkill', ['/pid', String(viewer.pid), '/T', '/F']).catch(() => {});
+    else if (viewer.pid) { try { process.kill(-viewer.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+  }
   const config = JSON.parse(await readFile(path.join(root, '.vscode/mcp.json'), 'utf8')).servers.testweave;
   if (manager === 'yarn-pnp') {
     assert.ok(config.args.includes('--require'));
@@ -101,7 +140,6 @@ try {
     await client.connect(transport);
     assert.equal((await client.listTools()).tools.length, 10);
   } finally { await client.close(); }
-  await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.yarn/\n.pnp.*\n');
   await mkdir(path.join(root, 'src'));
   await writeFile(path.join(root, 'src/app.ts'), 'export const behavior = 1;\n');
   const contract = createTestTruth('Package manager fixture');
@@ -130,7 +168,7 @@ try {
   await run('git', ['add', 'test-truth.md']);
   await run('git', ['commit', '-m', 'Update QA']);
   await run('git', ['push', 'origin', 'main']);
-  console.log(manager + ': install, CLI, doctor, standalone MCP, and Git push enforcement passed');
+  console.log(manager + ': install, CLI, skill refresh, doctor, viewer assets, standalone MCP, and Git push enforcement passed');
 } finally {
   const dirParent = path.dirname(directory);
   const resolvedTmp = path.resolve(tmpdir());

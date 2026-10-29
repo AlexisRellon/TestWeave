@@ -1,0 +1,34 @@
+{
+  "brand": "TestWeave",
+  "tagline": "Keep manual QA scenarios in step with your code.",
+  "brief": "An identity for the CLI and local MCP server that keeps source changes and manual QA scenarios aligned. Designed for developers, QA teams, and maintainers.",
+  "adjectives": ["precise", "connected", "dependable", "calm"],
+  "criteria": "A clear initial, a transparent weave, and a practical small-size cut. Outlined typography and flat colours keep the artwork portable.",
+  "industry": "software",
+  "mockups": ["readme", "terminal", "app-icon", "website", "sticker", "favicon-tab"],
+  "nav": ["Quickstart", "Documentation", "GitHub"],
+  "brand_color": "#087F72",
+  "tile_color": "#102C2A",
+  "greyscale": false,
+  "final": true,
+  "round": 2,
+  "concepts": [{
+    "name": "Woven W",
+    "symbol": "masters/testweave-symbol.svg",
+    "lockup": "masters/testweave-horizontal-color.svg",
+    "stacked": "masters/testweave-stacked-color.svg",
+    "symbol_on_tile": "masters/testweave-symbol-on-dark.svg",
+    "symbol_on_dark": "masters/testweave-symbol-on-dark.svg",
+    "lockup_on_dark": "masters/testweave-horizontal-dark.svg",
+    "stacked_on_dark": "masters/testweave-stacked-dark.svg",
+    "idea": "A woven W for code and QA moving together.",
+    "rationale": [
+      "The W gives the name an immediate visual anchor.",
+      "A transparent crossing separates two ribbons without effects or extra colours.",
+      "Deep teal on light surfaces and mint on ink keep the silhouette clear.",
+      "A wider crossing gap preserves the idea in browser tabs."
+    ]
+  }],
+  "recommendation": "Use the horizontal lockup for README and documentation headers, the symbol for compact spaces, and the simplified cut for icons below 32 px.",
+  "next_steps": ["Use the supplied artwork and spacing rules.", "Treat mockups as examples, not deployed product screens."]
+}

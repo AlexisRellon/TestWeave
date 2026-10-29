@@ -206,10 +206,40 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Export by module, all selected tags, priority and changed-since ref across vendor, checklist and Gherkin targets",
               "data": "generate --module cli-core --tags smoke --priority high --changed-since HEAD",
               "expected": "Filters combine, fixtures expand, invalid revisions fail, and empty selections emit valid empty artifacts. Normal files cannot overwrite existing files; JSON vendor bundles and BDD/checklist text contain definitions only."
+            },
+            {
+              "action": "Round-trip every emitted Xray type label through CSV/JSON and import Jira CSV with separate Labels.",
+              "data": "TEST_TYPES including UAT; Jira Labels release login smoke; --tags release and --tags login",
+              "expected": "Xray accepts and normalizes all emitted type labels. Jira CSV parses separate label tokens so each tag filter selects the imported case, retaining ambiguous labels instead of inferring a test type. Other import source delimiters and explicit-type validation remain unchanged."
             }
           ],
           "tags": [
             "v0.8.0",
+            "regression"
+          ]
+        },
+        {
+          "id": "CLI-008",
+          "title": "Review semantic QA changes and GitHub drift summaries",
+          "type": "system",
+          "priority": "high",
+          "preconditions": [
+            "An initialized local QA contract; use a disposable Git workspace for edits."
+          ],
+          "steps": [
+            {
+              "action": "Change a scenario outcome, NFT profile and module pointer; compare all diff formats. Run sync with GitHub output both locally and with a step summary file. Try invalid formats and refs.",
+              "data": "testweave diff --base HEAD --format text|markdown|json|github; testweave sync --base HEAD --strict --format github; GITHUB_STEP_SUMMARY",
+              "expected": "Diff reports stable module/test IDs with before/after changes and no formatting noise. GitHub sync emits escaped workflow annotations, appends a combined drift and definition summary and retains ordinary policy/exit codes. Invalid input fails clearly without altering the contract. ui and view start the same loopback viewer, print its URL, validate ports and stop cleanly on Ctrl+C."
+            },
+            {
+              "action": "Inspect sync --help and compare the supported output formats",
+              "data": "testweave sync --help; --format text|markdown|json|github",
+              "expected": "Help lists all four supported output formats, including markdown; the default remains text."
+            }
+          ],
+          "tags": [
+            "v0.9.0",
             "regression"
           ]
         }
@@ -432,6 +462,26 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             "v0.8.0",
             "regression"
           ]
+        },
+        {
+          "id": "INT-008",
+          "title": "Distribute review guides and verify local viewer, table annotation isolation and PR output boundaries",
+          "type": "system",
+          "priority": "high",
+          "preconditions": [
+            "An initialized local QA contract; use a disposable Git workspace for edits."
+          ],
+          "steps": [
+            {
+              "action": "Install or refresh the shared skill bundle, follow review links, run v0.9 regression checks and download each filtered viewer export.",
+              "data": "skills/testweave/commands/review.md; tests/v090-*.test.ts; xray, zephyr, jira, testrail, qase, obsidian, checklist",
+              "expected": "Every installed bundle includes working diff, GitHub summary and 5-view ui/view guidance. Regression checks cover semantic diff, annotation escaping, snapshot correctness, accessible test-document table rendering, browser-local pass/fail and comment isolation, and local HTTP boundaries. Downloads reuse validated exporters and requested filters, preserving fixture expansion and correct filenames/content types; no test execution status is written to the contract or exports."
+            }
+          ],
+          "tags": [
+            "v0.9.0",
+            "regression"
+          ]
         }
       ]
     },
@@ -485,7 +535,7 @@ The JSON block below is authoritative. Update affected modules and test steps wi
             {
               "action": "Execute MCP tools, contract validations, and server lifecycle matching release version",
               "data": "get_contract, upsert_test_module, check_drift, McpServer current release",
-              "expected": "Contracts are serialized, parsed, server version matches package (0.8.0), and drift is accurately calculated"
+              "expected": "Contracts are serialized, parsed, server version matches package (1.0.0), and drift is accurately calculated"
             }
           ],
           "tags": [
@@ -542,6 +592,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Read scoped specs and source diffs in a freshly initialized Git repository before its first commit, with staged and untracked files",
               "data": "get_spec_slice for a module linked to spec.md#login; staged or untracked source and spec files; invalid explicit baseline",
               "expected": "The empty tree supplies the absent baseline. The selected section, added source/spec hunks and existing test headers are returned without neighboring sections. Invalid explicit revisions still fail."
+            },
+            {
+              "action": "Read linked section context at explicit base/target revisions while the working spec is dirty or deleted; preview overlapping planned globs with repeated globstars.",
+              "data": "specContext(root, contract, moduleId, base, target); repeated globstar patterns ending in different literal names.",
+              "expected": "Section text and diffs both use the requested target revision, independent of dirty/deleted working files; omitted targets retain filesystem behavior and existing anchor/path/size validation. Valid repeated-globstar overlap checks terminate with bounded repeated-state work."
             }
           ],
           "tags": [
@@ -602,6 +657,11 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Change a prop type used by an exported wrapped component while keeping runtime code unchanged, then change only a comment",
               "data": "memo and forwardRef wrappers with inline callbacks, referenced functions and generic Props arguments; Props.value string to number",
               "expected": "Prop/signature changes retain stale-module in semantic mode. Comment-only edits remain cosmetic; cyclic local references terminate without hanging."
+            },
+            {
+              "action": "Compare inferred function names and public types through syntax wrappers and generic references.",
+              "data": "Rename a parenthesized arrow binding whose .name is returned; change an alias referenced by a generic constraint/default; change class field optionality.",
+              "expected": "Observable inferred-name and public API changes retain semantic drift; transparent parentheses/type wrappers do not hide them. Formatting and internal type-only changes remain cosmetic."
             }
           ],
           "tags": [
@@ -669,19 +729,21 @@ The JSON block below is authoritative. Update affected modules and test steps wi
           ],
           "steps": [
             {
-              "action": "Run doctor --fix on a v1 contract with prose, repeat it and inspect a locked or invalid contract",
+              "action": "Read and diagnose a v1 contract without mutation, then run doctor --fix, repeat it and inspect held locks, malformed contracts and simulated rename failure",
               "data": "schemaVersion 1 -> 2; test-truth.md.lock; existing docs/specs/refs",
-              "expected": "Migration validates and locks writes, preserves IDs, definitions and prose, and is idempotent. Invalid contracts and held locks are preserved. Existing spec pointer and drift policy behavior remains available."
+              "expected": "V1 read/initialize/diagnose preserve original bytes. Explicit v2 migration validates and locks each owning file, preserves IDs, definitions and user prose, and is idempotent. Invalid documents, held locks and failed atomic replacement preserve that document and release acquired locks/temp files. Root policy, spec pointers and public API exports remain compatible; migration is atomic per file, with no include-tree rollback guarantee."
             },
             {
               "action": "Author accessibility/security/performance/compatibility profiles and nested fixture references; try invalid metadata, missing fixtures and cycles",
-              "data": "profile wcagTarget/keyboard/screenReader/authzMatrix/session/inputBoundaries/viewports/network/budgets/checklist; {{fixture.standardUser}}",
+              "data": "profile wcagTarget/keyboard/screenReader/authzMatrix/session/inputBoundaries/viewports/network/budgets/checklist; define standardUser in the disposable contract and reference it from a step",
               "expected": "Profiles retain acceptance targets without execution outcomes. Fixtures remain tokens in storage and expand in exported steps/preconditions. Missing or cyclic fixtures and invalid profiles fail; strict provider request schemas serialize nullable optional fields and normalize them before storage."
             }
           ],
           "tags": [
             "v0.8.0",
-            "regression"
+            "regression",
+            "v1.0.0",
+            "compatibility"
           ]
         },
         {
@@ -702,12 +764,140 @@ The JSON block below is authoritative. Update affected modules and test steps wi
               "action": "Change package source and test definitions across base/target commits; test missing/repeated includes, duplicate IDs/fixtures, symlink escapes and concurrent edits",
               "data": "sync --base <ref>; pre-push committed snapshots; lock files",
               "expected": "Drift reads includes from the selected revisions rather than the working tree. Unchanged package QA reports stale-module. Invalid include graphs, escaping paths, duplicate identities and concurrent changes fail without partial writes."
+            },
+            {
+              "action": "Migrate a v2 root including a v1 child, inject a child rename failure and retry",
+              "data": "tests/v100-compatibility.test.ts; mixed-version include graph",
+              "expected": "The root remains byte-identical; successful child migration preserves IDs, child-local paths and surrounding prose. Failed child replacement preserves child bytes and removes acquired locks and temp files; retry succeeds. Already migrated files are not rolled back."
             }
           ],
           "tags": [
             "v0.8.0",
+            "regression",
+            "v1.0.0"
+          ]
+        },
+        {
+          "id": "ENG-011",
+          "title": "Semantic comparisons resolve included snapshots and preserve meaningful changes",
+          "type": "system",
+          "priority": "high",
+          "preconditions": [
+            "An initialized local QA contract; use a disposable Git workspace for edits."
+          ],
+          "steps": [
+            {
+              "action": "Compare contracts with reordered keys, modules, test IDs and set-like fields, then change ordered steps, expected outcomes, profiles, fixtures, policy and linked paths/specs. Repeat with added/deleted modules and package includes.",
+              "data": "Current and Git base test-truth.md plus packages/*/test-truth.md; unborn repository; explicit invalid baseline",
+              "expected": "Semantic reports ignore serialization and identity-list ordering while retaining meaningful before/after values, added/removed IDs and ordered step changes. Both snapshots compile their own includes and paths. A default comparison before the first commit uses an empty baseline; explicit invalid revisions fail. Source semantic filtering and strict provider schema boundaries remain unchanged. MCP reports package version 1.0.0."
+            }
+          ],
+          "tags": [
+            "v0.9.0",
             "regression"
           ]
+        }
+      ]
+    },
+    {
+      "id": "release-workflow",
+      "name": "Release Workflow",
+      "description": "Release tag validation, GitHub Release artifacts and package registry publication policy",
+      "paths": [
+        ".github/workflows/release.yml",
+        "RELEASING.md"
+      ],
+      "docs": [
+        "RELEASING.md"
+      ],
+      "tests": [
+        {
+          "id": "REL-001",
+          "title": "Release tags create GitHub artifacts without automatic npm registry publication",
+          "type": "system",
+          "priority": "high",
+          "preconditions": [
+            "A release tag points to a merged main commit with matching package, lockfile and changelog metadata."
+          ],
+          "steps": [
+            {
+              "action": "Review the release workflow permissions and publication steps, then run it for a valid release tag in a repository configured for GitHub Actions.",
+              "data": ".github/workflows/release.yml; git tag vX.Y.Z; GitHub Actions Release workflow",
+              "expected": "Validation and reusable CI complete before the workflow builds the versioned tarball and SHA256SUMS and creates the GitHub Release. The job has contents:write only; it does not publish packages to npmjs or GitHub Packages or require npm Trusted Publishing. Manual npmjs publication, if chosen, uses the exact artifact attached to the GitHub Release."
+            }
+          ],
+          "tags": []
+        }
+      ]
+    },
+    {
+      "id": "local-viewer",
+      "name": "Local QA Viewer",
+      "description": "Loopback browser inspection of scenario definitions, drift, impact, coverage and semantic changes.",
+      "paths": [
+        "src/ui/**/*.ts"
+      ],
+      "tests": [
+        {
+          "id": "UI-001",
+          "title": "Use the redesigned five-view local QA workspace with responsive filters and private annotations",
+          "type": "system",
+          "priority": "high",
+          "preconditions": [
+            "An initialized local QA contract with scenarios, drift or source links, and a semantic diff; use a disposable workspace for live edits."
+          ],
+          "steps": [
+            {
+              "action": "Start ui/view and inspect the workspace at desktop and narrow mobile widths; check the shell, five top-level views, local status, and filter disclosure.",
+              "data": "testweave ui; testweave view --port 4317; 1440×900 and 390×844 viewport; no network connection",
+              "expected": "The viewer keeps its warm #F5F7F2 paper canvas, rounded white work panels, #102C2A ink active navigation, and thread-teal/coral accents. The approved Woven W brand symbol and horizontal wordmark render cleanly across desktop and mobile; dark-surface shortcut rail uses mint on ink while the light header uses thread-teal and ink lettering. Favicon, Apple touch icon and web manifest load locally from allowlisted routes. Search is immediately available on mobile; secondary filters use a keyboard-accessible disclosure and retain their values across width changes. All data and assets load locally without external requests."
+            },
+            {
+              "action": "Move among catalog, test document, live drift, coverage graph, and semantic diff using pointer and keyboard navigation; inspect their empty/error states at desktop and mobile widths.",
+              "data": "Scenario catalog; Test document; Live drift; Coverage graph; Semantic diff; Left/Right Arrow and Tab; 1440×900 and 390×844",
+              "expected": "Each tab selects its matching visible panel and updates accessible selected/focus state; arrow navigation moves between tabs. Catalog and test-document views expose their applicable filters. The selected graph node is brought into view on narrow screens without node overlap or document-wide horizontal scrolling. Healthy diagnostics are compact while problems stay prominent. The accessible table caption retains the local-storage/export explanation, its columns remain reachable by local horizontal scrolling, and redundant visible headings do not repeat that purpose. Drift impact, semantic before/after changes, and loading, empty, and error states remain usable."
+            },
+            {
+              "action": "Record local pass/fail and comments in the accessible grouped test-document table, reload or refresh, then clear the notes.",
+              "data": "localStorage testweave.localAnnotations.v1; status Pass/Fail; comment; reload; two-step clear confirmation",
+              "expected": "Rows group by module and align ordered step cells with their table headers. Status starts unassessed; status and comment persist in browser-local storage by test ID and survive refresh without changing test-truth.md or canonical in-memory contract data. Clearing requires confirmation and resets local notes."
+            },
+            {
+              "action": "Download filtered exports, then edit source/contracts and Git state while connected; exercise malformed contracts, hostile labels, foreign Host/Origin, write attempts, invalid export/query options, and same-origin requests on port 80 when available.",
+              "data": "module/type/priority/tags/fixture/spec/search/assessment filters; xray, zephyr, jira, testrail, qase, obsidian, checklist; malformed JSON; foreign Host/Origin; --port 80",
+              "expected": "Exports reflect supported definition filters and never contain local pass/fail or comment data. Reloaded views reflect live changes; catalog, table, and exports remain usable without Git. Untrusted labels render as text; malformed contracts show errors and recover after repair. The HTTP server binds only to loopback, rejects foreign hosts/origins and writes, serves allowlisted brand assets and manifest, validates routes/options, and serves no arbitrary files. Default-port origin canonicalization accepts valid port-80 requests while still rejecting foreign Host/Origin; stopping closes SSE clients and polling. Content-Security-Policy allows only local viewer assets and same-origin connections, with no development service on port 8400, regardless of NODE_ENV."
+            },
+            {
+              "action": "Edit and clear notes when persistent storage fails or a scenario has been removed.",
+              "data": "Seed a removed scenario ID; make localStorage.setItem/removeItem throw with an older readable note.",
+              "expected": "Clear remains enabled for orphaned entries and requires confirmation. After failed writes/removal, session memory preserves current edits and clearing without restoring older stored values. Successful persistent storage and definition/export isolation remain intact; session-only changes cannot survive reload."
+            }
+          ],
+          "tags": [
+            "v1.0.0",
+            "regression",
+            "responsive",
+            "keyboard",
+            "annotations",
+            "exports",
+            "local-only"
+          ],
+          "profile": {
+            "wcagTarget": "WCAG 2.1 AA",
+            "keyboard": [
+              "Tab to all controls; use Left/Right Arrow across the five view tabs and confirm focus, selected state, and visible panel stay aligned; use Enter/Space for native filter disclosure and Escape/Enter as supported."
+            ],
+            "viewports": [
+              {
+                "width": 1440,
+                "height": 900
+              },
+              {
+                "width": 390,
+                "height": 844
+              }
+            ]
+          }
         }
       ]
     }

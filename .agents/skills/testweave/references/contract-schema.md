@@ -4,7 +4,7 @@
 
 ## Contract and policy
 
-- `schemaVersion`: 1.
+- `schemaVersion`: 2 for new contracts. V1 remains readable; `doctor --fix` migrates it under the contract lock, preserving prose and definitions.
 - `project`: nonempty display name.
 - `policy.mode`: `block` or `warn`.
 - `policy.sourceGlobs`: 1–100 positive workspace-relative POSIX globs covering behavior-bearing files.
@@ -23,7 +23,7 @@ Optional module `docs` and `specs` contain up to 100 document pointers each. The
 
 A test requires `id`, `title`, `priority` and `steps`. Omitted `preconditions` and `tags` default to empty arrays for compact wire mode. Test IDs are globally unique across modules. IDs start with an ASCII letter or digit, contain only letters, digits, dots, underscores or hyphens, and are at most 100 characters.
 
-- `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component or e2e. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
+- `type`: unit, integration, system, sanity, smoke, regression, uat, ui, api, interface, component, e2e, accessibility, security, performance or compatibility. Omitted types default to regression; `testType` is accepted as an alias when type is absent.
 - `priority`: low, medium, high or critical.
 - `preconditions`: up to 100 nonempty strings.
 - `steps`: 1–500 objects containing nonempty `action` and `expected`, plus `data` (which may be empty).
@@ -35,7 +35,7 @@ Names, descriptions, titles, preconditions, actions and expected results are tri
 
 ~~~json testweave
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "project": "Example",
   "policy": {
     "mode": "block",
@@ -71,3 +71,11 @@ Names, descriptions, titles, preconditions, actions and expected results are tri
 ~~~
 
 Preserve established IDs. An upsert replaces the complete module; include every test to retain. Add failure and boundary cases for this example using [functional testing guidance](functional-testing.md). Tests describe acceptance criteria and do not imply they have been executed.
+
+## V2 profiles, fixtures and includes
+
+Optional test `profile` describes manual non-functional checks: `wcagTarget` (string), `keyboard`, `screenReader`, `session`, `inputBoundaries`, `checklist` (string arrays), `authzMatrix` (`{role, resource, access: "allow" | "deny"}[]`), `viewports` (`{width, height}[]`, positive integers), `network` (string), and `budgets` (`{metric, limit, unit}[]`, nonnegative limits). These describe acceptance targets, never measured results or execution statuses.
+
+Top-level `fixtures` maps stable identifiers to reusable nonempty strings, for example `{"standardUser":"A verified test account"}`. Reference them in preconditions or step action/data/expected using `{{fixture.standardUser}}`. Export expands references recursively; storage retains tokens. Missing references and cycles fail doctor/export. Fixtures are local authored data: do not store real credentials.
+
+Top-level `includes` lists explicit descendant contracts, for example `["packages/billing/test-truth.md"]`. Each child is a complete contract. Its source paths, docs/specs and Markdown test refs are relative to its own directory. Root policy governs the compiled workspace. Queries, exports and revision-aware drift compile all included modules. Mutations update the owning document under locks without flattening it into the root. IDs and fixture names must be globally unique. Missing/repeated includes, symlink escapes and more than 100 documents fail validation. A child module's paths must stay within its package when updated from the root. Child policies do not override root policy.

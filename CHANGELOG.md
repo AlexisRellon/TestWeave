@@ -4,6 +4,44 @@ User-visible changes are recorded here. Releases follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-29
+
+### Added
+
+- Semantic contract diffing with text, Markdown, JSON and GitHub output, including package contracts, scenario steps and outcomes, NFT profiles and linked paths/specs.
+- GitHub workflow annotations and step summaries combining QA drift with definition changes while preserving sync policy and exit codes.
+- A zero-cloud `testweave ui` / `view` loopback viewer with five views: scenario catalog, test-document table, live drift and impact dashboard, interactive coverage graph, and visual semantic diff with filtered exporter downloads.
+- Browser-local assessment and comment notes with filtering and confirmed clearing; these never enter contracts or exports.
+- Woven W branding, light/dark logo assets, favicons, and a responsive local viewer shell.
+- Local live reload, HTTP boundary checks, regression coverage and manual QA definitions for the new review workflows.
+
+### Changed
+
+- Consolidated the unreleased v0.9 work into the first stable release. Schema v2 remains current; v1 reads remain supported and `doctor --fix` explicitly migrates existing definitions while preserving IDs and prose.
+- Documented stable CLI, TypeScript and MCP compatibility, scoped skill workflows, and supported importer layouts. Contract replacement is atomic per owning file; migration across includes is not a graph-wide transaction.
+
+### Fixed
+
+- Semantic drift retains inferred function-name changes through parentheses and TypeScript syntax wrappers.
+- Public generic constraints and defaults retain referenced type dependencies during semantic comparison.
+- Optional public class fields remain distinct from required fields during semantic comparison.
+- Planned recursive-glob impact comparisons cache repeated states instead of stalling on incompatible trailing paths.
+- Explicit target-revision spec reads use committed section text even when the working document is dirty or missing.
+- Xray imports accept the UAT label emitted by TestWeave exports.
+- Jira CSV imports split space-separated labels into independently filterable tags without inferring a test type.
+- Repository QA fixture examples no longer activate an undefined fixture during unfiltered exports.
+- Viewer graph cards avoid overlap, unknown drift metadata is omitted, diagnostic labels wrap, canonical default-port origins are accepted, and local notes remain usable when browser storage fails or cases are removed.
+- Installed viewer CSP excludes development service endpoints even when `NODE_ENV` is unset.
+
+### Known limitations
+
+- Browser notes are keyed by test ID within a browser origin, including its port, rather than by workspace. They are personal scratch notes, not shared execution history; unavailable storage falls back to page memory.
+- Importers accept the layouts documented in the import guide, not every vendor edition or customized export. No external test-management service is contacted.
+
+### Security
+
+- Upgrade Zod to 4.6.7 and refresh compatible transitive dependencies to resolve the production dependency audit findings.
+
 ## [0.8.0] - 2026-10-23
 
 ### Added
